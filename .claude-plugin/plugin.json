@@ -1,0 +1,15 @@
+{
+  "name": "agentManager-Skill",
+  "version": "1.0.0",
+  "description": "多 Agent 协作编排：一个主 agent 带最多 3 个 worker 在同一个工作目录里并行干活。账本落 SQLite，文件声明即锁，PreToolUse hook 硬拦并发写与越权构建，交付只传摘要 + ID 以保护主 agent 上下文。",
+  "author": {
+    "name": "Wjg-Ares"
+  },
+  "keywords": [
+    "multi-agent",
+    "orchestration",
+    "worker-pool",
+    "concurrency",
+    "sqlite"
+  ]
+}

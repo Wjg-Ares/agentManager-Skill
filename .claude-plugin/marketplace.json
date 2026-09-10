@@ -1,0 +1,24 @@
+{
+  "name": "agentManager-Skill",
+  "owner": {
+    "name": "Wjg-Ares"
+  },
+  "metadata": {
+    "description": "多 Agent 协作编排 — 主 agent 派活、worker 并行执行、文件声明即锁、交付只传摘要与 ID，账本落 SQLite 零依赖",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "agentManager-Skill",
+      "description": "多 Agent 协作编排技能集，含 /am-setup（初始化）、/am-status（主 agent 调度）、/am-worker（worker 声明与交付）、/am-approve（审批与队列推进），并自带 PreToolUse hook 拦截共用工作区的并发写",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/am-setup",
+        "./skills/am-status",
+        "./skills/am-worker",
+        "./skills/am-approve"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 本机运行状态，不进版本库
+.claude/am/
+*.db
+*.db-wal
+*.db-shm
+
+*.stackdump
