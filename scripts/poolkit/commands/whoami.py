@@ -25,17 +25,46 @@ def run(ctx, args) -> Result:
     me = registry.by_session(conn, session_id) if session_id else None
 
     if me is None:
+        # 没登记的会话多半是刚开的 worker 窗口。把各编号的占用情况摆出来，
+        # 并把建议敲的那条命令写全 —— 编号由用户定，程序只负责让他不用猜。
+        slots = ledger.slots(conn)
+        occupied = [s for s in slots if s.registration is not None]
+        free = [s.role for s in slots if s.registration is None]
+
+        lines = []
+        for slot in slots:
+            reg = slot.registration
+            if reg is None:
+                lines.append(f"  {slot.role}  空着")
+            elif reg.status.value != "alive":
+                lines.append(f"  {slot.role}  {reg.session_name}（已死，reap 后可复用）")
+            else:
+                lines.append(f"  {slot.role}  {reg.session_name} 占着")
+
+        steps = []
+        if free:
+            steps.append(f"python pool.py register {free[0]}    ← 建议这个")
+            if len(free) > 1:
+                steps.append(f"（也可以换成 {'、'.join(free[1:])}）")
+        else:
+            steps.append(
+                "编号都占着了。确认有窗口已关就先 python pool.py reap 回收，"
+                "或 python pool.py config set max_workers <更大的数>"
+            )
+        steps.append("只是路过、不参与编排 → 什么都不用做，正常改代码即可")
+
         return Result(
             text=join(
-                "本会话没有登记角色，不受编排规则约束。",
-                next_steps(
-                    [
-                        "要参与编排： python pool.py register worker-N",
-                        "只是路过 → 什么都不用做，正常改代码即可",
-                    ]
-                ),
+                "本会话还没登记角色，不受编排规则约束。",
+                section(f"当前 slot（已占 {len(occupied)}/{len(slots)}）：", lines),
+                next_steps(steps),
             ),
-            data={"registered": False, "session_id": session_id},
+            data={
+                "registered": False,
+                "session_id": session_id,
+                "free_roles": free,
+                "suggested": free[0] if free else None,
+            },
         )
 
     task = ledger.open_task_of(conn, me.role)
