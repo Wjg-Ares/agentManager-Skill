@@ -44,12 +44,16 @@ claude plugin install agentManager-Skill
     am/pool.db                      账本
 ```
 
-**这时 C 盘那个插件就可以卸了**：
+**C 盘那份插件由它自己卸掉**，不用你敲命令 —— 但只在落地**自检通过**之后：
+它会清掉 `CLAUDE_PLUGIN_ROOT` 再跑一次落地的脚本，确认那份真能独立工作，
+才执行 `plugin uninstall` + `marketplace remove` 并删掉 C 盘残留目录。
+自检没过就保留插件并说明原因，绝不让你两头空。
 
-```bash
-claude plugin uninstall agentManager-Skill
-claude plugin marketplace remove agentManager-Skill
-```
+两条安全边界：
+
+- 用 `--plugin-dir` 从**你自己的仓库**跑落地时，脚本源是源码不是插件安装，
+  这时它只报告「未动」，不会去碰你的仓库
+- 想保留插件安装就加 `--keep-plugin`
 
 落地产物里写死了本机绝对路径，`--vendor` 会自动把它们加进 `.gitignore`。
 
@@ -177,7 +181,7 @@ python scripts/pool.py config set deliver_timeout_min 45
 python -m unittest discover -s tests
 ```
 
-108 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
+116 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
 手工验证要开两个窗口卡时机，写成测试就是几行。
 
 两条硬约束由测试强制，不靠注释：

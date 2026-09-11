@@ -15,6 +15,8 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from .. import config, db, liveness, registry
@@ -56,7 +58,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--vendor",
         action="store_true",
         help="把脚本、hook、四个命令全部复制进项目的 .claude/，"
-        "之后不再依赖插件安装，C 盘那份可以卸载",
+        "自检通过后自动卸掉插件安装（C 盘那份）",
+    )
+    parser.add_argument(
+        "--keep-plugin",
+        action="store_true",
+        help="配合 --vendor：落地后保留插件安装，不自动卸载",
     )
 
 
@@ -83,11 +90,13 @@ def run(ctx, args) -> Result:
     # 落地模式：脚本与命令都搬进项目，规则里的路径也跟着指向项目内那份
     base = _plugin_root()
     vendor_note = ""
+    retire_note = ""
     hook_note = "随插件自带，已生效（未改动你的 settings.json）"
     if args.vendor:
         vendor_note = _vendor_files(root)
         base = root / ".claude"
         hook_note = _install_hook(root)
+        retire_note = _retire_plugin(root, keep=args.keep_plugin)
 
     rules_path, rules_note = _install_rules(
         conn, root, force=args.force_rules, base=base
@@ -116,6 +125,7 @@ def run(ctx, args) -> Result:
             f"  本会话      {reg_note}",
             f"  hook        {hook_note}",
             *([f"  落地        {vendor_note}"] if vendor_note else []),
+            *([f"  插件安装    {retire_note}"] if retire_note else []),
             f"  临时文件    {db.get_setting(conn, 'scratch_dir') or '未限制（--scratch-dir 可设）'}",
         ],
     )
@@ -490,6 +500,106 @@ def _write_settings(path: Path, data: dict, pre_tool_use: list) -> None:
     path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+
+
+def _claude_home() -> Path:
+    """Claude Code 的配置目录。用户可能用 CLAUDE_CONFIG_DIR 搬到别的盘。"""
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(override) if override else Path.home() / ".claude"
+
+
+def _is_installed_plugin(src: Path) -> bool:
+    """脚本是不是来自「插件安装目录」。
+
+    这道判断关系到会不会误删东西：用 `--plugin-dir` 从你自己的仓库跑落地时，
+    `_plugin_root()` 指的是那个仓库 —— 那是源码，绝不能碰。
+    只有落在 <配置目录>/plugins/ 下面的才是装出来的副本，才可以清掉。
+    """
+    try:
+        src.resolve().relative_to((_claude_home() / "plugins").resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def _verify_vendored(root: Path) -> tuple[bool, str]:
+    """跑一次落地的脚本，确认它能独立工作。
+
+    卸插件之前必须过这一关 —— 万一落地少了文件又把插件删了，用户两头空。
+    刻意清掉 CLAUDE_PLUGIN_ROOT 再跑，模拟插件已经不在的处境。
+    """
+    script = root / ".claude" / "scripts" / "pool.py"
+    if not script.is_file():
+        return False, "找不到落地后的 pool.py"
+
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PLUGIN_ROOT"}
+    env["PYTHONIOENCODING"] = "utf-8"
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), "--project-root", str(root), "config"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=60,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return False, str(exc)
+    if proc.returncode != 0:
+        return False, ((proc.stderr or proc.stdout).strip() or "退出码非 0")[:200]
+    return True, ""
+
+
+def _plugin_name(src: Path) -> str:
+    manifest = src / ".claude-plugin" / "plugin.json"
+    try:
+        return json.loads(manifest.read_text(encoding="utf-8"))["name"]
+    except Exception:
+        return src.parent.parent.name if src.parent.name else src.name
+
+
+def _retire_plugin(root: Path, *, keep: bool) -> str:
+    """落地成功后把插件安装清掉 —— 这是用户要「C 盘不占空间」的最后一步。"""
+    src = _plugin_root()
+    if not _is_installed_plugin(src):
+        return f"未动（脚本来自 {src}，不是插件安装目录）"
+
+    ok, detail = _verify_vendored(root)
+    if not ok:
+        return f"**保留** —— 落地自检没通过（{detail}），不敢卸"
+    if keep:
+        return "按 --keep-plugin 保留"
+
+    name = _plugin_name(src)
+    exe = os.environ.get("CLAUDE_CODE_EXECPATH") or shutil.which("claude")
+    if exe:
+        for argv in (
+            ["plugin", "uninstall", name],
+            ["plugin", "marketplace", "remove", name],
+        ):
+            try:
+                subprocess.run([exe, *argv], capture_output=True, timeout=120)
+            except (subprocess.SubprocessError, OSError):
+                pass  # 登记清不掉也没关系，下面直接删目录
+
+    home = _claude_home() / "plugins"
+    leftover = []
+    for directory in (home / "cache" / name, home / "marketplaces" / name):
+        if not directory.exists():
+            continue
+        shutil.rmtree(directory, ignore_errors=True)
+        if directory.exists():
+            leftover.append(directory)
+
+    if leftover:
+        # 正在跑的就是 cache 里这份脚本，Windows 下 .pyc 可能还被占着
+        return (
+            "已卸载，但有目录没删干净（本次运行就在里面）："
+            + "、".join(str(p) for p in leftover)
+            + " —— 重开窗口后删即可"
+        )
+    return f"已卸载并清空 C 盘目录（{name}）"
 
 
 def _ensure_gitignore(root: Path) -> str:
