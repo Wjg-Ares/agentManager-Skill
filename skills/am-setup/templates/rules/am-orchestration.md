@@ -4,10 +4,10 @@
 > 因此规则写一次全员生效，且不会被 compact 冲掉。
 
 **先判断本条是否适用于你**：只有在编排账本里登记过角色的会话才受下面的约束。
-不确定就执行 `python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py" whoami`；
+不确定就执行 `python "<am 脚本路径>" whoami`；
 输出「没有登记角色」的话，本文件与你无关，正常干活即可。
 
-下文的 `P` = `python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py"`。
+下文的 `P` = `python "<am 脚本路径>"`。
 
 ## 如果你是 worker
 

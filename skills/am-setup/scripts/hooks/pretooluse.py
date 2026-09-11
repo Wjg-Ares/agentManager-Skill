@@ -83,10 +83,10 @@ def main() -> None:
     if ledger_file is None:
         _allow()
 
-    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))
-    )
-    sys.path.insert(0, os.path.join(plugin_root, "scripts"))
+    # 只靠自己的位置定位 poolkit：本文件在 <scripts>/hooks/，poolkit 在 <scripts>/poolkit。
+    # 不读 CLAUDE_PLUGIN_ROOT —— 那个变量只在插件安装下存在，
+    # 而 npx skills add 装出来的布局里没有它。
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     try:
         from poolkit import guard

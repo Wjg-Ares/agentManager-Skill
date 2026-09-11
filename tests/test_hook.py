@@ -18,12 +18,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import register_worker  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "am-setup" / "scripts"))
 
 from poolkit import claims, config, db, ledger  # noqa: E402
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-HOOK = PLUGIN_ROOT / "hooks" / "pretooluse.py"
+SKILL_ROOT = PLUGIN_ROOT / "skills" / "am-setup"
+HOOK = SKILL_ROOT / "scripts" / "hooks" / "pretooluse.py"
 
 
 def run_hook(payload: dict) -> dict:
@@ -50,7 +51,7 @@ def is_denied(result: dict) -> bool:
 class LedgerLookupConsistencyTest(unittest.TestCase):
     def test_inline_path_matches_config(self) -> None:
         """hook 内联的 `_LEDGER_PARTS` 必须和 config 里的锚点一致。"""
-        sys.path.insert(0, str(PLUGIN_ROOT / "hooks"))
+        sys.path.insert(0, str(HOOK.parent))
         import importlib.util
 
         spec = importlib.util.spec_from_file_location("_hook_mod", HOOK)

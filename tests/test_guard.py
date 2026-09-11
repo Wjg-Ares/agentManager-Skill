@@ -14,11 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import fresh_db, register_worker  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "am-setup" / "scripts"))
 
 from poolkit import claims, guard, ledger  # noqa: E402
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "am-setup" / "scripts"
 
 
 def imported_names(path: Path) -> set[str]:

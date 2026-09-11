@@ -1,5 +1,5 @@
 {
-  "description": "多 Agent 编排的强制层：拦住共用工作区里的并发写（防止两个 worker 改同一文件互相覆盖丢代码），以及 worker 越权执行构建与 git 写操作。只对跑过 /am-setup 的项目生效，其余项目立即放行。",
+  "description": "多 Agent 编排的强制层：拦住共用工作区里的并发写（防止两个 worker 改同一文件互相覆盖丢代码），以及 worker 越权执行构建与 git 写操作。只对跑过 /am-setup 的项目生效，其余项目立即放行。本文件只在插件形态（claude plugin install / --plugin-dir）下生效；npx skills add 装出来的形态由 /am-setup 把等价配置写进项目的 settings.local.json。",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.py\"",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/skills/am-setup/scripts/hooks/pretooluse.py\"",
             "timeout": 10
           }
         ]
