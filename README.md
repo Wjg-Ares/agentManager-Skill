@@ -34,6 +34,11 @@ claude plugin install agentManager-Skill
 它会建库、把规则装进 `.claude/rules/`、把本会话注册成主 agent，
 并告诉你接下来该做什么。**拦截用的 hook 随插件自带，不会改你的 `settings.json`。**
 
+> **升级插件之后，跑一次 `/am-setup` 就行。** `.claude/rules/` 里那份是副本，
+> 插件升级只换模板、不动副本，所以要靠 setup 同步过去。它靠写入时记下的哈希
+> 判断：你没手改过就直接更新，改过就保留你的版本并提示 `--force-rules`。
+> 平时不需要记这个参数。
+
 然后在同一个工作目录另开 1~3 个 Claude Code 窗口，每个里面执行：
 
 ```
@@ -136,7 +141,7 @@ python scripts/pool.py config set deliver_timeout_min 45
 python -m unittest discover -s tests
 ```
 
-82 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
+91 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
 手工验证要开两个窗口卡时机，写成测试就是几行。
 
 两条硬约束由测试强制，不靠注释：

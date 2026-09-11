@@ -194,9 +194,10 @@ def migrate(conn: sqlite3.Connection) -> int:
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str:
+    """读配置。未设置过则回落到默认值；不在默认表里的键（内部记录）返回空串。"""
     row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     if row is None:
-        return config.DEFAULT_SETTINGS[key]
+        return config.DEFAULT_SETTINGS.get(key, "")
     return row["value"]
 
 
@@ -212,9 +213,18 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str, now: str) -> Non
     )
 
 
-def all_settings(conn: sqlite3.Connection) -> dict[str, str]:
+def all_settings(
+    conn: sqlite3.Connection, *, include_internal: bool = False
+) -> dict[str, str]:
+    """全部配置。
+
+    下划线开头的是**内部记录**（如规则文件的哈希），不是给用户调的旋钮，
+    默认不返回 —— 否则它们会跑到 `config` 命令的输出里，看着像配置项。
+    """
     merged = dict(config.DEFAULT_SETTINGS)
     for row in conn.execute("SELECT key, value FROM settings"):
+        if not include_internal and row["key"].startswith("_"):
+            continue
         merged[row["key"]] = row["value"]
     return merged
 

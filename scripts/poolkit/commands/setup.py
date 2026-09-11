@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def run(ctx, args) -> Result:
         if args.scratch_dir:
             db.set_setting(conn, "scratch_dir", args.scratch_dir.strip(), now)
 
-    rules_path, rules_note = _install_rules(root, force=args.force_rules)
+    rules_path, rules_note = _install_rules(conn, root, force=args.force_rules)
     gitignore_note = (
         "跳过" if args.no_gitignore else _ensure_gitignore(root)
     )
@@ -238,26 +239,73 @@ def _plugin_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def _install_rules(root: Path, *, force: bool) -> tuple[Path, str]:
+#: 内部记录：上次写进项目的规则文件长什么样。
+#: 下划线开头表示「不是给用户调的旋钮」，config 命令不展示（见 db.all_settings）。
+_RULES_HASH_KEY = "_rules_hash"
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _install_rules(conn, root: Path, *, force: bool) -> tuple[Path, str]:
     """把规则模板装进项目的 .claude/rules/。
 
-    规则必须落在**项目里**而不是插件里：共用同一个工作目录的所有会话都会加载
-    它，这正是 worker 不需要任何 spawn 时注入就知道规矩的原因（§8）。
+    规则必须落在**项目里**而不是插件里：共用同一个工作目录的所有会话都会加载它，
+    这正是 worker 不需要任何 spawn 时注入就知道规矩的原因（§8）。
+
+    但这也意味着项目里那份是**副本** —— 升级插件只换掉模板，副本不会跟着动，
+    所以每次 setup 都要决定要不要更新它。光比「内容和模板一不一样」是不够的，
+    那分不清下面两种情况，而它们的处理方式相反：
+
+    - 和**上次写入时**一模一样 → 你没动过，只是模板升级了 → 直接更新，不该烦你
+    - 和上次写入时也不一样 → 你手改过（加了项目专属规则）→ 不覆盖，保住你的修改
+
+    所以写入时记一个哈希，下次拿它当基准比对。
     """
     source = _plugin_root() / "templates" / "rules" / config.RULES_FILENAME
     target = root / ".claude" / "rules" / config.RULES_FILENAME
     if not source.exists():
         raise UsageError(
             f"找不到规则模板：{source}",
-            hint="插件文件不完整，重装一次 npx skills add Wjg-Ares/agentManager-Skill",
+            hint="插件文件不完整，重装一次：claude plugin install agentManager-Skill",
         )
+
+    source_text = source.read_text(encoding="utf-8")
+    source_hash = _digest(source_text)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and not force:
-        if target.read_text(encoding="utf-8") == source.read_text(encoding="utf-8"):
-            return target, "已是最新"
-        return target, "已存在且内容不同，未覆盖；要更新加 --force-rules"
-    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    return target, "已写入"
+
+    def _remember() -> None:
+        with db.transaction(conn):
+            db.set_setting(conn, _RULES_HASH_KEY, source_hash, utcnow())
+
+    def _write(note: str) -> tuple[Path, str]:
+        target.write_text(source_text, encoding="utf-8")
+        _remember()
+        return target, note
+
+    if not target.exists():
+        return _write("已写入")
+
+    current_hash = _digest(target.read_text(encoding="utf-8"))
+    if current_hash == source_hash:
+        if db.get_setting(conn, _RULES_HASH_KEY) != source_hash:
+            _remember()  # 老版本装的，补上基准记录
+        return target, "已是最新"
+
+    if force:
+        return _write("已覆盖（--force-rules）")
+
+    recorded = db.get_setting(conn, _RULES_HASH_KEY)
+    if recorded == current_hash:
+        return _write("已更新到新版规则")
+    if not recorded:
+        return (
+            target,
+            "内容与模板不同，且没有历史记录（判断不出是不是你改的），未覆盖；"
+            "要用新版加 --force-rules",
+        )
+    return target, "你手改过，未覆盖；要用新版模板加 --force-rules"
 
 
 def _ensure_gitignore(root: Path) -> str:

@@ -20,7 +20,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py" setup
 |---|---|
 | `--scratch-dir <路径>` | 临时文件的去处，设了之后往系统 Temp 写会被拦下 |
 | `--role worker-1` | 把本会话注册成 worker 而不是 main |
-| `--force-rules` | 覆盖已存在的规则文件 |
+| `--force-rules` | 强行覆盖项目里的规则文件。**平时不需要** —— 只要你没手改过那份文件，插件升级后跑一次 `/am-setup` 就会自动更新；只有你在里面加过东西时它才会保留不覆盖，那时才用这个 |
 | `--no-gitignore` | 不改 .gitignore |
 | `--reset` | **清空账本从头来**，任务/交付/锁/注册/审计全删，配置保留 |
 
