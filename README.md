@@ -9,8 +9,19 @@
 ## 安装
 
 ```bash
-npx skills add Wjg-Ares/agentManager-Skill
+claude plugin marketplace add Wjg-Ares/agentManager-Skill
+claude plugin install agentManager-Skill
 ```
+
+**装完要重开一个 Claude Code 窗口**，当前会话不会热加载。
+
+> **不要用 `npx skills add` 装这个插件。** 那个安装器只复制 `skills/` 目录下的
+> SKILL.md，而本插件四个 skill 共用的 Python 代码在仓库根的 `scripts/`、
+> 强制层在 `hooks/` —— 两者都不会被下载，装出来的四个命令是死的。
+> 它也不认识 Claude Code 的 `hooks.json`（那是个跨 agent 的通用安装器），
+> 所以并发写拦截这套**命脉功能无论如何都装不上**。
+
+装完后文件在 `~/.claude/plugins/cache/agentManager-Skill/agentManager-Skill/<版本>/`。
 
 ## 首次使用
 
