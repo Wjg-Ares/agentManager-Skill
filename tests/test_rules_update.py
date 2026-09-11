@@ -129,6 +129,27 @@ class RulesUpdateTest(unittest.TestCase):
         self._set_template(V2)
         self.assertEqual(self._install(), "已更新到新版规则")
 
+    def test_plugin_root_placeholder_is_expanded(self) -> None:
+        """规则文件里的 ${CLAUDE_PLUGIN_ROOT} 必须在写入时换成真实路径。
+
+        `.claude/rules/` 是常驻规则文本，不是 skill —— Claude Code 不对它做
+        ${...} 替换，shell 里也没有这个变量。留着字面量的话路径会塌成
+        "/scripts/pool.py"，worker 一跑就找不到脚本。
+        """
+        self._set_template('执行 python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py" whoami\n')
+        self._install()
+
+        written = self.target.read_text(encoding="utf-8")
+        self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", written)
+        self.assertIn(self.plugin.as_posix(), written)
+        self.assertIn("/scripts/pool.py", written)
+
+    def test_baseline_uses_the_expanded_text(self) -> None:
+        """哈希得基于替换后的内容，否则每次比对都不一致，会被误判成手改过。"""
+        self._set_template('${CLAUDE_PLUGIN_ROOT}/scripts/pool.py\n')
+        self._install()
+        self.assertEqual(self._install(), "已是最新")
+
     def test_internal_key_hidden_from_config(self) -> None:
         """哈希是内部记录，不该出现在 config 的配置列表里。"""
         self._set_template(V1)

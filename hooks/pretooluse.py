@@ -19,6 +19,15 @@ import json
 import os
 import sys
 
+# Windows 下 stdout 默认 GBK，而这里吐出的 JSON 带中文拒绝理由，直接 print 会
+# UnicodeEncodeError —— hook 一崩，这次 Edit 就失去了保护（比没装还糟：
+# 用户以为有锁）。强制 UTF-8，Claude Code 本来就按 UTF-8 读 hook 输出。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
 #: 账本相对项目根的位置。与 poolkit.config.ROOT_ANCHORS[0] 必须一致，
 #: tests/test_hook.py 会断言这一点。
 _LEDGER_PARTS = (".claude", "am", "pool.db")

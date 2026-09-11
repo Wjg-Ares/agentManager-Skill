@@ -271,7 +271,16 @@ def _install_rules(conn, root: Path, *, force: bool) -> tuple[Path, str]:
             hint="插件文件不完整，重装一次：claude plugin install agentManager-Skill",
         )
 
-    source_text = source.read_text(encoding="utf-8")
+    # 把 ${CLAUDE_PLUGIN_ROOT} 换成真实路径再写进项目。
+    #
+    # 这一步不能省：`.claude/rules/` 是常驻规则文本，**不是 skill**，
+    # Claude Code 不会对它做 ${...} 替换（SKILL.md 才会）；丢给 shell 后
+    # 那个变量也不存在，于是路径塌成 "/scripts/pool.py"，worker 一跑就找不到脚本。
+    # setup 自己知道插件装在哪，在这里定死最省事，升级后重跑 setup 会自动跟上。
+    source_text = source.read_text(encoding="utf-8").replace(
+        "${CLAUDE_PLUGIN_ROOT}", _plugin_root().as_posix()
+    )
+    # 哈希基于替换后的内容 —— 基准要和真正落盘的东西对齐
     source_hash = _digest(source_text)
     target.parent.mkdir(parents=True, exist_ok=True)
 
