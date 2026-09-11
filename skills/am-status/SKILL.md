@@ -2,12 +2,12 @@
 name: am-status
 description: 主 agent 的调度台 —— 查看各 worker 在干什么、谁待审批、队列还剩什么，以及建任务、派活、查交付、回收死掉的 worker。compact 之后调一次即可完全恢复调度状态。
 allowed-tools:
-  - Bash(python "${CLAUDE_SKILL_DIR}/../am-setup/scripts/pool.py" *)
+  - Bash(python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py" *)
 ---
 
 # /am-status — 主 agent 调度台
 
-`P` 代表 `python "${CLAUDE_SKILL_DIR}/../am-setup/scripts/pool.py"`。
+`P` 代表 `python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py"`。
 
 先跑这个，**它的输出自带「下一步」，照做即可**：
 

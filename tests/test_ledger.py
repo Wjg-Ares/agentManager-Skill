@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import fresh_db, register_worker  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "am-setup" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from poolkit import claims, db, ledger  # noqa: E402
 from poolkit.errors import Conflict, InvalidState  # noqa: E402

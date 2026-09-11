@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import fresh_db, register_worker  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "am-setup" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from poolkit import claims, config, db, ledger  # noqa: E402
 
@@ -123,7 +123,7 @@ class DeclareTest(unittest.TestCase):
 def _race_declare(args: tuple[str, str, int, str]) -> bool:
     """子进程里抢同一个文件，返回是否抢到。"""
     db_path, worker, task_id, target = args
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "am-setup" / "scripts"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
     from poolkit import claims as c
     from poolkit import db as d
 

@@ -9,39 +9,36 @@
 ## 安装
 
 ```bash
-npx skills add Wjg-Ares/agentManager-Skill
+claude plugin marketplace add Wjg-Ares/agentManager-Skill
+claude plugin install agentManager-Skill
 ```
 
-装进**当前项目**的 `.claude/skills/`，不碰 C 盘。然后在项目里：
+**装完要重开一个 Claude Code 窗口**，当前会话不会热加载。
+
+> **不要用 `npx skills add` 装这个插件。** 那个安装器只复制 `skills/` 目录下的
+> SKILL.md，而本插件四个 skill 共用的 Python 代码在仓库根的 `scripts/`、
+> 强制层在 `hooks/` —— 两者都不会被下载，装出来的四个命令是死的。
+> 它也不认识 Claude Code 的 `hooks.json`（那是个跨 agent 的通用安装器），
+> 所以并发写拦截这套**命脉功能无论如何都装不上**。
+
+装完后文件在 `~/.claude/plugins/cache/agentManager-Skill/agentManager-Skill/<版本>/`。
+
+## 首次使用
+
+在主 agent 会话里：
 
 ```
 /am-setup
 ```
 
-它会建账本、装规则、把拦截 hook 写进本项目的 `.claude/settings.local.json`，
-并告诉你下一步做什么。
+它会建库、把规则装进 `.claude/rules/`、把本会话注册成主 agent，
+并告诉你接下来该做什么。**拦截用的 hook 随插件自带，不会改你的 `settings.json`。**
 
-> **`/am-setup` 跑完要重开一次窗口** —— hook 刚写进配置，当前会话还没加载它，
-> 那之前并发写没有保护。
-
-然后在同一个工作目录另开 1~3 个窗口，每个里面执行：
+然后在同一个工作目录另开 1~3 个 Claude Code 窗口，每个里面执行：
 
 ```
 /am-worker register worker-1     # 2、3 同理
 ```
-
-### 或者装成全局插件
-
-```bash
-claude plugin marketplace add Wjg-Ares/agentManager-Skill
-claude plugin install agentManager-Skill
-```
-
-这条写 `~/.claude`，装一次所有项目都能用，hook 随插件自带（`hooks/hooks.json`），
-`/am-setup` 不会去改任何配置文件。代价是 hook 对**所有项目**生效
-（无关项目约 69ms/次编辑，直接放行）。
-
-两种形态 `/am-setup` 会自动分辨，输出里的「安装形态」一行会告诉你它认成了哪种。
 
 ## 四个技能
 
@@ -77,17 +74,16 @@ claude plugin install agentManager-Skill
 
 ## 底层 CLI
 
-四个技能底下是同一个 CLI（在 `skills/am-setup/scripts/pool.py`，另外三个 skill
-按相对路径引用它），也可以直接用：
+四个技能底下是同一个 CLI，也可以直接用：
 
 ```bash
-python skills/am-setup/scripts/pool.py status
-python skills/am-setup/scripts/pool.py --json check-edit src/Foo.cs
+python scripts/pool.py status
+python scripts/pool.py --json check-edit src/Foo.cs
 ```
 
 | 命令 | 用途 |
 |---|---|
-| `setup` | 建库、装规则、装 hook、注册主 agent（`--remove-hook` 撤 hook） |
+| `setup` | 建库、装规则、注册主 agent |
 | `register <角色>` | 登记本会话（worker-1 / main …） |
 | `whoami` | 我是谁、在干什么、占着哪些文件 |
 | `status` | 全景 + 下一步（`--check-live` 顺带探活） |
@@ -105,15 +101,15 @@ python skills/am-setup/scripts/pool.py --json check-edit src/Foo.cs
 | `log` | 审计：谁在何时做了什么 |
 | `check-edit` / `check-bash` | hook 用的同一套判定，可手工排查 |
 
-加命令不用改核心：往 `skills/am-setup/scripts/poolkit/commands/` 放一个模块就自动注册。
+加命令不用改核心：往 `scripts/poolkit/commands/` 放一个模块就自动注册。
 
 ## 配置
 
 配置存在库里，跟着项目走，不动你的 `settings.json`：
 
 ```bash
-python skills/am-setup/scripts/pool.py config
-python skills/am-setup/scripts/pool.py config set deliver_timeout_min 45
+python scripts/pool.py config                          # 看全部
+python scripts/pool.py config set deliver_timeout_min 45
 ```
 
 | 键 | 默认 | 含义 |
@@ -123,42 +119,23 @@ python skills/am-setup/scripts/pool.py config set deliver_timeout_min 45
 | `max_attempts` | 2 | 重派几次后进死信 |
 | `default_priority` | 100 | 新任务默认优先级（越小越先） |
 
-## 卸载
-
-```bash
-python skills/am-setup/scripts/pool.py setup --remove-hook   # 撤掉 hook
-rm -rf .claude/skills/am-*                                   # npx 装的
-rm -rf .claude/am .claude/rules/am-orchestration.md          # 账本与规则
-```
-
-插件形态则是 `claude plugin uninstall agentManager-Skill` 加
-`claude plugin marketplace remove agentManager-Skill`。
-
 ## 开发
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-66 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
+57 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
 手工验证要开两个窗口卡时机，写成测试就是几行。
 
-三条硬约束由测试强制，不靠注释：
+两条硬约束由测试强制，不靠注释：
 
 1. `guard.py` 不准 import `liveness.py`（也不准 import `subprocess`）。
    热路径每次 Edit 都跑，而 `claude agents --json` 要 1 秒以上。
 2. hook 入口内联的账本查找必须与 `config.ROOT_ANCHORS[0]` 一致。
-3. 写进用户 `settings.local.json` 的 hook 必须幂等、不吞掉别人的配置、能干净撤掉。
-
-### 为什么 Python 放在 `skills/am-setup/scripts/` 而不是仓库根
-
-`npx skills add` 只复制 `skills/` 目录下的内容，仓库根的东西一概不下载。
-代码放在 skill 里，`npx` 和 `claude plugin` 两条安装路径才都能拿到完整的一份。
-四个 skill 共用这一份，另外三个用 `${CLAUDE_SKILL_DIR}/../am-setup/scripts/pool.py`
-引用 —— 两种安装形态下它们都是兄弟目录，这个相对路径都成立。
 
 ## 数据
 
 账本在 `<项目根>/.claude/am/pool.db`，不同项目天然隔离，`/am-setup` 会自动
-写进 `.gitignore`。表结构见 `skills/am-setup/scripts/poolkit/db.py`，schema 版本走
+写进 `.gitignore`。表结构见 `scripts/poolkit/db.py`，schema 版本走
 `PRAGMA user_version`，迁移路径已留好。

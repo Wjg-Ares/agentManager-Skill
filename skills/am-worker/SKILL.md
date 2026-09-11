@@ -2,12 +2,12 @@
 name: am-worker
 description: worker 会话用的一组动作 —— 注册角色、查自己在干什么、声明将要改的文件（即上锁）、交付产出、撞锁后交接。共用工作目录下改代码前必须先声明文件，否则会覆盖别人的改动。
 allowed-tools:
-  - Bash(python "${CLAUDE_SKILL_DIR}/../am-setup/scripts/pool.py" *)
+  - Bash(python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py" *)
 ---
 
 # /am-worker — worker 侧动作
 
-`P` 代表 `python "${CLAUDE_SKILL_DIR}/../am-setup/scripts/pool.py"`。
+`P` 代表 `python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py"`。
 
 | 场景 | 命令 |
 |---|---|
