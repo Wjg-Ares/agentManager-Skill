@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
+import shutil
 from pathlib import Path
 
 from .. import config, db, liveness, registry
@@ -50,6 +52,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="配合 --reset：即使还有 worker 活着也照删（危险，见输出里的说明）",
     )
+    parser.add_argument(
+        "--vendor",
+        action="store_true",
+        help="把脚本、hook、四个命令全部复制进项目的 .claude/，"
+        "之后不再依赖插件安装，C 盘那份可以卸载",
+    )
 
 
 def run(ctx, args) -> Result:
@@ -72,7 +80,18 @@ def run(ctx, args) -> Result:
         if args.scratch_dir:
             db.set_setting(conn, "scratch_dir", args.scratch_dir.strip(), now)
 
-    rules_path, rules_note = _install_rules(conn, root, force=args.force_rules)
+    # 落地模式：脚本与命令都搬进项目，规则里的路径也跟着指向项目内那份
+    base = _plugin_root()
+    vendor_note = ""
+    hook_note = "随插件自带，已生效（未改动你的 settings.json）"
+    if args.vendor:
+        vendor_note = _vendor_files(root)
+        base = root / ".claude"
+        hook_note = _install_hook(root)
+
+    rules_path, rules_note = _install_rules(
+        conn, root, force=args.force_rules, base=base
+    )
     gitignore_note = (
         "跳过" if args.no_gitignore else _ensure_gitignore(root)
     )
@@ -95,7 +114,8 @@ def run(ctx, args) -> Result:
             f"  规则文件    {rules_path}（{rules_note}）",
             f"  .gitignore  {gitignore_note}",
             f"  本会话      {reg_note}",
-            "  hook        随插件自带，已生效（未改动你的 settings.json）",
+            f"  hook        {hook_note}",
+            *([f"  落地        {vendor_note}"] if vendor_note else []),
             f"  临时文件    {db.get_setting(conn, 'scratch_dir') or '未限制（--scratch-dir 可设）'}",
         ],
     )
@@ -248,7 +268,9 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _install_rules(conn, root: Path, *, force: bool) -> tuple[Path, str]:
+def _install_rules(
+    conn, root: Path, *, force: bool, base: Path
+) -> tuple[Path, str]:
     """把规则模板装进项目的 .claude/rules/。
 
     规则必须落在**项目里**而不是插件里：共用同一个工作目录的所有会话都会加载它，
@@ -278,7 +300,7 @@ def _install_rules(conn, root: Path, *, force: bool) -> tuple[Path, str]:
     # 那个变量也不存在，于是路径塌成 "/scripts/pool.py"，worker 一跑就找不到脚本。
     # setup 自己知道插件装在哪，在这里定死最省事，升级后重跑 setup 会自动跟上。
     source_text = source.read_text(encoding="utf-8").replace(
-        "${CLAUDE_PLUGIN_ROOT}", _plugin_root().as_posix()
+        "${CLAUDE_PLUGIN_ROOT}", base.as_posix()
     )
     # 哈希基于替换后的内容 —— 基准要和真正落盘的东西对齐
     source_hash = _digest(source_text)
@@ -315,6 +337,159 @@ def _install_rules(conn, root: Path, *, force: bool) -> tuple[Path, str]:
             "要用新版加 --force-rules",
         )
     return target, "你手改过，未覆盖；要用新版模板加 --force-rules"
+
+
+#: hook 覆盖的工具。与 hooks/hooks.json 里的 matcher 保持一致。
+HOOK_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash"
+
+#: 识别「本插件写的 hook 条目」用的特征串
+_HOOK_MARK = "pretooluse.py"
+
+
+def _vendor_files(root: Path) -> str:
+    """把运行时文件全部复制进项目的 `.claude/`。
+
+    落完之后项目自包含 —— 脚本、hook、四个命令、规则都在项目里，
+    C 盘那个插件可以卸载。代价是升级要重新跑一次 `--vendor`。
+    """
+    src = _plugin_root()
+    claude = root / ".claude"
+    dst_scripts = claude / "scripts"
+
+    # 整棵树重来，避免上个版本留下的模块混在里面（删掉的命令会变成幽灵）
+    shutil.rmtree(dst_scripts, ignore_errors=True)
+    shutil.copytree(
+        src / "scripts",
+        dst_scripts,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+
+    # hook 脚本放 scripts/hooks/ —— 它按自身位置找同级的 poolkit
+    (dst_scripts / "hooks").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        src / "hooks" / _HOOK_MARK, dst_scripts / "hooks" / _HOOK_MARK
+    )
+
+    # 四个 skill：命令路径写死成项目内的绝对路径。
+    # 项目级 skill 放在 .claude/skills/，Claude Code 会自动加载。
+    pool_py = (dst_scripts / "pool.py").as_posix()
+    installed = 0
+    for skill_src in sorted((src / "skills").iterdir()):
+        manifest = skill_src / "SKILL.md"
+        if not manifest.is_file():
+            continue
+        dst = claude / "skills" / skill_src.name
+        dst.mkdir(parents=True, exist_ok=True)
+        (dst / "SKILL.md").write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py", pool_py
+            ),
+            encoding="utf-8",
+        )
+        installed += 1
+
+    _ignore_vendored(root)
+    return f".claude/scripts + {installed} 个命令（来自 {src}）"
+
+
+#: 落地产物：里面写死了本机绝对路径，进版本库对队友毫无意义还会天天冲突
+_VENDORED_IGNORES = (
+    ".claude/scripts/",
+    ".claude/skills/",
+    ".claude/settings.local.json",
+)
+
+
+def _ignore_vendored(root: Path) -> None:
+    """把落地产物加进 .gitignore。已有的条目不重复写。"""
+    path = root / ".gitignore"
+    existing: set[str] = set()
+    content = ""
+    if path.exists():
+        content = path.read_text(encoding="utf-8", errors="replace")
+        existing = {line.strip().rstrip("/") for line in content.splitlines()}
+
+    missing = [e for e in _VENDORED_IGNORES if e.rstrip("/") not in existing]
+    if not missing:
+        return
+
+    sep = "" if content.endswith("\n") or not content else "\n"
+    path.write_text(
+        content + sep + "\n# 多 Agent 编排落地产物（写死了本机路径）\n"
+        + "\n".join(missing)
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _install_hook(root: Path, *, remove: bool = False) -> str:
+    """把 PreToolUse hook 写进**项目的** settings.local.json。
+
+    落地之后插件会被卸载，`hooks/hooks.json` 也就不再生效，强制层得靠项目
+    自己的配置撑着。写 `.local.json` 是因为它不进版本库 —— 这是本机路径。
+    """
+    script = root / ".claude" / "scripts" / "hooks" / _HOOK_MARK
+    settings_path = root / ".claude" / "settings.local.json"
+
+    data: dict = {}
+    if settings_path.exists():
+        raw = settings_path.read_text(encoding="utf-8").strip()
+        if raw:
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise UsageError(
+                    f"{settings_path} 不是合法 JSON：{exc}",
+                    hint="先把它修好再跑 —— 我不会覆盖你已有的配置",
+                ) from exc
+
+    entries = (data.get("hooks") or {}).get("PreToolUse") or []
+
+    # 先摘掉本插件的旧条目：重复执行才是幂等的，路径变了也能自动纠正
+    cleaned: list = []
+    had_ours = False
+    for entry in entries:
+        inner = entry.get("hooks") or []
+        kept = [h for h in inner if _HOOK_MARK not in str(h.get("command", ""))]
+        if len(kept) != len(inner):
+            had_ours = True
+        if kept:
+            cleaned.append({**entry, "hooks": kept})
+
+    if remove:
+        if not had_ours:
+            return "本来就没装"
+        _write_settings(settings_path, data, cleaned)
+        return f"已从 {settings_path.name} 移除"
+
+    cleaned.append(
+        {
+            "matcher": HOOK_MATCHER,
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f'python "{script.as_posix()}"',
+                    "timeout": 10,
+                }
+            ],
+        }
+    )
+    _write_settings(settings_path, data, cleaned)
+    return f"已{'更新' if had_ours else '写入'} .claude/settings.local.json"
+
+
+def _write_settings(path: Path, data: dict, pre_tool_use: list) -> None:
+    hooks = data.setdefault("hooks", {})
+    if pre_tool_use:
+        hooks["PreToolUse"] = pre_tool_use
+    else:
+        hooks.pop("PreToolUse", None)
+        if not hooks:
+            data.pop("hooks", None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def _ensure_gitignore(root: Path) -> str:

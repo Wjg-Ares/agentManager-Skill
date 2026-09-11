@@ -356,6 +356,10 @@ Python 自带 `sqlite3`（实测引擎 3.45.1），**用户无需安装任何数
 | **hook 全局生效的代价** | 无关项目 **69ms/次**（Python 冷启动基线 46ms），有账本项目 108ms。判否逻辑内联在 hook 里，**不导入 poolkit** | 实测；导入 poolkit 要 +43ms，绝大多数 Edit 发生在无关项目 |
 | **slash 命令粒度** | **4 个**：`/am-setup`、`/am-status`、`/am-worker`、`/am-approve`。其余动词只做 CLI | 每个 skill 的 description 都常驻上下文，命令拆太细反而费 token |
 | **配置放哪** | 库里的 `settings` 表，`config set` 改 | 跟着项目走，不污染 `settings.json` |
+| **不占 C 盘** | `/am-setup --vendor` 把脚本、hook、四个命令全部落地进项目的 `.claude/`，之后插件可卸载 | 插件本体必然装在 `~/.claude`（Claude Code 写死），只能让运行时文件搬进项目。落地后规则与 SKILL.md 里的路径全部改写成项目内绝对路径，不依赖 `${CLAUDE_PLUGIN_ROOT}` |
+| **规则副本何时更新** | 写入时记内容哈希，下次比对：与基准一致=用户没改过，直接更新；不一致=手改过，保留并提示 `--force-rules` | `.claude/rules/` 是副本，插件升级只换模板不动副本；光比「和模板一不一样」分不清「没改过」与「手改过」，而这两者处理方式相反 |
+| **规则里的变量不展开** | setup 写入时就把 `${CLAUDE_PLUGIN_ROOT}` 换成真实绝对路径 | `.claude/rules/` 是常驻规则文本而非 skill，Claude Code 只对 SKILL.md 做变量替换；shell 里也没有该变量，留着字面量路径会塌成 `/scripts/pool.py` |
+| **控制台编码** | `pool.py` 与 `hooks/pretooluse.py` 启动即把 stdout/stderr 强制为 UTF-8 | Windows 控制台是 cp936，输出里的 ✓ 会抛 UnicodeEncodeError。hook 崩掉尤其危险：那次 Edit 会失去保护，而用户以为锁在生效 |
 
 ### 更早解决的
 

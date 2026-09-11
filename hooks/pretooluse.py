@@ -92,10 +92,22 @@ def main() -> None:
     if ledger_file is None:
         _allow()
 
-    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))
-    )
-    sys.path.insert(0, os.path.join(plugin_root, "scripts"))
+    # 按**自己的位置**找 poolkit，支持两种布局：
+    #   插件：  <插件根>/hooks/pretooluse.py        → <插件根>/scripts/poolkit
+    #   落地：  <项目>/.claude/scripts/hooks/...    → <项目>/.claude/scripts/poolkit
+    # 刻意不读 CLAUDE_PLUGIN_ROOT —— 落地之后那个变量仍指向 C 盘的插件副本，
+    # 跟着它走就会加载到另一份代码（甚至是已卸载的残留）。
+    _here = os.path.dirname(os.path.abspath(__file__))
+    for _candidate in (
+        _here,                                                    # 同级就有 poolkit
+        os.path.dirname(_here),                                   # scripts/hooks → scripts
+        os.path.join(os.path.dirname(_here), "scripts"),          # <根>/hooks → <根>/scripts
+    ):
+        if os.path.isdir(os.path.join(_candidate, "poolkit")):
+            sys.path.insert(0, _candidate)
+            break
+    else:
+        _allow()
 
     try:
         from poolkit import guard

@@ -53,7 +53,9 @@ class RulesUpdateTest(unittest.TestCase):
 
     def _install(self, *, force: bool = False) -> str:
         with patch.object(setup_cmd, "_plugin_root", lambda: self.plugin):
-            _, note = setup_cmd._install_rules(self.conn, self.project, force=force)
+            _, note = setup_cmd._install_rules(
+                self.conn, self.project, force=force, base=self.plugin
+            )
         return note
 
     # ------------------------------------------------------------------

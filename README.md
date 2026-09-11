@@ -23,6 +23,42 @@ claude plugin install agentManager-Skill
 
 装完后文件在 `~/.claude/plugins/cache/agentManager-Skill/agentManager-Skill/<版本>/`。
 
+### 不想占 C 盘：落地到项目里
+
+插件只要用 `claude plugin install` 装，本体就必然在 `~/.claude`（Claude Code 写死的）。
+但可以把运行时文件全部搬进项目，之后就不依赖那份安装了：
+
+```
+/am-setup --vendor
+```
+
+跑完项目变成自包含的：
+
+```
+你的项目/.claude/
+    scripts/pool.py, poolkit/       脚本
+    scripts/hooks/pretooluse.py     拦截层
+    skills/am-setup/SKILL.md ...    四个命令（项目级 skill，自动加载）
+    rules/am-orchestration.md       规则（路径指向上面的脚本）
+    settings.local.json             hook 配置
+    am/pool.db                      账本
+```
+
+**这时 C 盘那个插件就可以卸了**：
+
+```bash
+claude plugin uninstall agentManager-Skill
+claude plugin marketplace remove agentManager-Skill
+```
+
+落地产物里写死了本机绝对路径，`--vendor` 会自动把它们加进 `.gitignore`。
+
+升级的话：更新本地仓库，再从仓库直接跑一次落地（不需要装插件）：
+
+```bash
+python <仓库>/scripts/pool.py --project-root <你的项目> setup --vendor
+```
+
 ## 首次使用
 
 在主 agent 会话里：
@@ -141,7 +177,7 @@ python scripts/pool.py config set deliver_timeout_min 45
 python -m unittest discover -s tests
 ```
 
-97 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
+108 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
 手工验证要开两个窗口卡时机，写成测试就是几行。
 
 两条硬约束由测试强制，不靠注释：
