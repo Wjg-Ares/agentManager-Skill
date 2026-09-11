@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from poolkit import db, registry  # noqa: E402
+from poolkit import config, db, registry  # noqa: E402
 
 
 def fresh_db() -> tuple[sqlite3.Connection, Path]:
@@ -17,11 +17,15 @@ def fresh_db() -> tuple[sqlite3.Connection, Path]:
 
     不用 `:memory:` —— 这套东西的要害就是多进程共享一个文件，
     内存库测不出 WAL、busy_timeout 和部分唯一索引在文件上的真实行为。
+
+    库放在**真实结构**上（`<项目根>/.claude/am/pool.db`）而不是随便一个临时文件 ——
+    有些判定要从库的位置反推项目根，结构不对就测不出真实行为。
     """
-    tmp = Path(tempfile.mkdtemp(prefix="am-test-")) / "pool.db"
-    conn = db.connect(tmp, create=True)
+    root = Path(tempfile.mkdtemp(prefix="am-test-")).resolve()
+    path = config.db_path(root)
+    conn = db.connect(path, create=True)
     db.migrate(conn)
-    return conn, tmp
+    return conn, path
 
 
 def register_worker(conn: sqlite3.Connection, role: str) -> None:

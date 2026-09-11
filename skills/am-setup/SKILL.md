@@ -18,7 +18,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py" setup
 
 | 参数 | 用途 |
 |---|---|
-| `--scratch-dir <路径>` | 临时文件的去处，设了之后往系统 Temp 写会被拦下 |
+| `--scratch-dir <路径>` | 临时文件换个去处。**平时不用给** —— 默认就是项目内的 `.claude/am/tmp`，setup 会自动建好 |
 | `--role worker-1` | 把本会话注册成 worker 而不是 main |
 | `--force-rules` | 强行覆盖项目里的规则文件。**平时不需要**，也**不要和 `--vendor` 叠加**（落地本来就会重写规则路径）—— 只要你没手改过那份文件，跑一次 `/am-setup` 就会自动更新；只有你在里面加过东西时它才会保留不覆盖，那时才用这个。覆盖前会把你改过的那份备份成 `.bak` |
 | `--no-gitignore` | 不改 .gitignore |

@@ -18,6 +18,7 @@ from typing import Final
 
 AM_DIR_PARTS: Final[tuple[str, ...]] = (".claude", "am")
 DB_FILENAME: Final = "pool.db"
+SCRATCH_DIRNAME: Final = "tmp"
 RULES_FILENAME: Final = "am-orchestration.md"
 
 #: 向上查找项目根时的锚点，按优先级排列。命中即停。
@@ -159,6 +160,15 @@ def am_dir(project_root: str | os.PathLike[str]) -> Path:
 def db_path(project_root: str | os.PathLike[str]) -> Path:
     """项目的账本路径：<项目根>/.claude/am/pool.db"""
     return am_dir(project_root) / DB_FILENAME
+
+
+def default_scratch_dir(project_root: str | os.PathLike[str]) -> Path:
+    """临时文件的默认去处：<项目根>/.claude/am/tmp
+
+    放项目里而不是系统 Temp，三个好处：跟着项目走、不同项目天然隔开、
+    `.claude/am/` 本来就在 .gitignore 里。**所以不需要用户配置任何东西。**
+    """
+    return am_dir(project_root) / SCRATCH_DIRNAME
 
 
 def current_session_id() -> str | None:

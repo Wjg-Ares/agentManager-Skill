@@ -203,6 +203,39 @@ def _auto_claim(
     )
 
 
+def _project_root_of(conn: sqlite3.Connection) -> str | None:
+    """从连接反推项目根（规范化）：账本在 <项目根>/.claude/am/pool.db。
+
+    走 `PRAGMA database_list` 拿库文件路径，不需要额外传参数 —— guard 的调用方
+    只给了一个连接。
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+    except sqlite3.Error:
+        return None
+    if not row or not row[2]:
+        return None
+
+    # 必须确认这确实是 <项目根>/.claude/am/pool.db。
+    # 不校验就盲目往上爬三级的话，库一旦不在标准位置（测试夹具、将来改结构、
+    # 有人手动挪过），会推出一个高得离谱的目录 —— 比如 AppData\Local ——
+    # 于是它底下的一切都被当成「项目内」放行，scratch 规则大片**静默**失效。
+    db_file = Path(row[2])
+    claude_dirname, am_dirname = config.AM_DIR_PARTS
+    if (
+        db_file.name != config.DB_FILENAME
+        or db_file.parent.name != am_dirname
+        or db_file.parent.parent.name != claude_dirname
+    ):
+        return None
+    return config.normalize_path(db_file.parent.parent.parent)
+
+
+def _is_inside(path: str, directory: str) -> bool:
+    """path 是否落在 directory 之下。两者都须已规范化。"""
+    return path == directory or path.startswith(directory + os.sep)
+
+
 def _scratch_check(
     conn: sqlite3.Connection, key: str, display: str
 ) -> Decision | None:
@@ -218,8 +251,16 @@ def _scratch_check(
     scratch = db.get_setting(conn, "scratch_dir").strip()
     if not scratch:
         return None
+
+    # 项目自己的文件不算「往系统 Temp 扔垃圾」。
+    # 有人就把项目放在 Temp 下面试东西 —— 那时整个项目的路径都含 AppData\Local\Temp，
+    # 一刀切会把他所有代码都拦住，连锁判定都轮不到。
+    root = _project_root_of(conn)
+    if root is not None and _is_inside(key, root):
+        return None
+
     # 目标本身就在指定的暂存区里（有人把 scratch_dir 设进了 Temp）就别拦了
-    if config.normalize_path(scratch) in key:
+    if _is_inside(key, config.normalize_path(scratch)):
         return None
     return Decision(
         allowed=False,

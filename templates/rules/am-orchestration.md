@@ -11,9 +11,11 @@
 
 ## 所有角色通用
 
-**临时文件、一次性脚本、中间产物不要写进系统临时目录**（`%TEMP%`、
-`C:\Users\...\AppData\Local\Temp\`、`C:\Windows\Temp\`）。写去项目配置的暂存目录，
-路径用 `P config` 查 `scratch_dir` 那一项。
+**临时文件、一次性脚本、中间产物一律写项目里的 `.claude/am/tmp/`**，
+不要写进系统临时目录（`%TEMP%`、`C:\Users\...\AppData\Local\Temp\`、`C:\Windows\Temp\`）。
+
+那个目录跟着项目走、已经在 `.gitignore` 里，不用你操心清理。
+（换了别的位置就用 `P config` 查 `scratch_dir` 那一项。）
 
 理由有两条，都很实际：系统 Temp 会被清理工具随时清掉；而且 Windows 给出的
 那种 8.3 短名路径（`ADMINI~1`）会触发 Claude Code 的可疑路径检查，**每写一次

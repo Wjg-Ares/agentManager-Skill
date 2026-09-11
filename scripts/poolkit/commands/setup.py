@@ -86,6 +86,19 @@ def run(ctx, args) -> Result:
                 db.set_setting(conn, key, value, now)
         if args.scratch_dir:
             db.set_setting(conn, "scratch_dir", args.scratch_dir.strip(), now)
+        elif not db.get_setting(conn, "scratch_dir").strip():
+            # 没配过就给项目内的默认位置 —— 这事不该劳烦用户去想一个路径
+            db.set_setting(
+                conn, "scratch_dir", str(config.default_scratch_dir(root)), now
+            )
+
+    # 暂存目录得真的存在 —— 光写进配置，agent 往里放第一个文件时照样失败
+    scratch = db.get_setting(conn, "scratch_dir").strip()
+    if scratch:
+        try:
+            Path(scratch).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # 用户自己配了个不合法的路径，guard 拦截时会把它报出来
 
     # 落地模式：脚本与命令都搬进项目，规则里的路径也跟着指向项目内那份
     base = _plugin_root()

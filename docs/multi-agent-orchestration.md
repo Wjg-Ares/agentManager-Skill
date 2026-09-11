@@ -358,6 +358,8 @@ Python 自带 `sqlite3`（实测引擎 3.45.1），**用户无需安装任何数
 | **配置放哪** | 库里的 `settings` 表，`config set` 改 | 跟着项目走，不污染 `settings.json` |
 | **不占 C 盘** | `/am-setup --vendor` 把脚本、hook、四个命令全部落地进项目的 `.claude/`，**自检通过后自动卸掉插件安装** | 插件本体必然装在 `~/.claude`（Claude Code 写死，实测 `--scope project` 也只改「声明在哪」，installPath 仍在 C 盘），只能让运行时文件搬进项目。落地后规则与 SKILL.md 里的路径全部改写成项目内绝对路径，不依赖 `${CLAUDE_PLUGIN_ROOT}` |
 | **卸插件的门槛** | 先清掉 `CLAUDE_PLUGIN_ROOT` 跑一次落地的脚本，过了才卸；脚本源在插件安装目录之外（如 `--plugin-dir` 指向的仓库）则一概不动 | 删目录的操作必须有退路：落地缺文件又把插件删了，用户两头空；而误把用户的开发仓库当插件删掉，后果更严重 |
+| **临时文件放哪** | 默认 `<项目根>/.claude/am/tmp`，setup 自动设好并建出目录，**不需要用户配置** | 原先要用户自己指一个路径（`--scratch-dir`），用户反问「就不能默认放项目里固定文件夹吗」—— 他是对的：跟着项目走、不同项目天然隔开、`.claude/am/` 本来就在 .gitignore 里 |
+| **谁算「往 Temp 扔垃圾」** | 落在项目根之下的一律不算，哪怕项目本身就在系统 Temp 里 | 有人就在临时目录里试东西，那时整个项目路径都含 `AppData\Local\Temp`，一刀切会把他所有代码都拦住、连锁判定都轮不到 |
 | **规则副本何时更新** | 写入时记内容哈希，下次比对：与基准一致=用户没改过，直接更新；不一致=手改过，保留并提示 `--force-rules` | `.claude/rules/` 是副本，插件升级只换模板不动副本；光比「和模板一不一样」分不清「没改过」与「手改过」，而这两者处理方式相反 |
 | **规则里的变量不展开** | setup 写入时就把 `${CLAUDE_PLUGIN_ROOT}` 换成真实绝对路径 | `.claude/rules/` 是常驻规则文本而非 skill，Claude Code 只对 SKILL.md 做变量替换；shell 里也没有该变量，留着字面量路径会塌成 `/scripts/pool.py` |
 | **控制台编码** | `pool.py` 与 `hooks/pretooluse.py` 启动即把 stdout/stderr 强制为 UTF-8 | Windows 控制台是 cp936，输出里的 ✓ 会抛 UnicodeEncodeError。hook 崩掉尤其危险：那次 Edit 会失去保护，而用户以为锁在生效 |
