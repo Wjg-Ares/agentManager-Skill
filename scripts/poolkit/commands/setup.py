@@ -39,11 +39,24 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--scratch-dir",
         help="临时文件的去处，如 D:\\claude-tmp。设了之后往系统 Temp 写文件会被拦下",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="清空账本从头来：任务、交付、文件声明、注册、审计全删（配置保留）",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="配合 --reset：即使还有 worker 活着也照删（危险，见输出里的说明）",
+    )
 
 
 def run(ctx, args) -> Result:
     root = ctx.project_root or Path(os.getcwd()).resolve()
     ctx.project_root = root
+
+    if args.reset:
+        return _reset(ctx, args)
 
     conn = ctx.connect(create=True)  # 建库 + 迁移
     version = db.schema_version(conn)
@@ -94,6 +107,100 @@ def run(ctx, args) -> Result:
         ]
     )
     return Result(text=join(body, steps), data=data)
+
+
+#: 清空顺序：先子后父，外键才不会挡。events 也删 —— reset 的语义是从头来。
+_RESET_TABLES = ("claims", "deliverables", "tasks", "registry", "events")
+
+
+def _reset(ctx, args) -> Result:
+    """清空账本重来。
+
+    **不自动触发**。主 agent 重开窗口是日常操作（compact、手滑关窗、崩溃），
+    那种情况下只要重新注册一下地址就行，账本必须留着 —— 因为 worker 是独立进程，
+    主窗口没了它们照样在改代码，`claims` 一清锁就全没了，而它们还在同一个目录里
+    写文件。那正是这套东西唯一要防的事故。
+
+    所以清空只能由用户显式敲 `--reset`，而且还要先确认没有活着的 worker。
+    """
+    conn = ctx.connect()  # 库不存在会抛 NotSetUp，本来也没什么可清的
+
+    before = {
+        "tasks": _count(conn, "tasks"),
+        "open_tasks": _count(conn, "tasks", "status IN ('assigned','delivered','rejected')"),
+        "deliverables": _count(conn, "deliverables"),
+        "active_claims": _count(conn, "claims", "released_at IS NULL"),
+        "registry": _count(conn, "registry"),
+        "events": _count(conn, "events"),
+    }
+
+    survivors = _live_workers(conn, ctx)
+    if survivors and not args.force:
+        raise UsageError(
+            f"还有 {len(survivors)} 个 worker 活着：{'、'.join(survivors)}",
+            hint=(
+                "它们是独立进程，现在清空会把文件锁一起删掉，而它们还在同一个目录里改代码 —— "
+                "覆盖丢代码正是这套东西要防的事。先关掉那些窗口再 --reset；"
+                "确实要强来就加 --force"
+            ),
+        )
+
+    now = utcnow()
+    with db.transaction(conn):
+        for table in _RESET_TABLES:
+            conn.execute(f"DELETE FROM {table}")
+        db.log_event(
+            conn,
+            kind="reset",
+            now=now,
+            detail=f"清空前：{before}" + ("（--force，无视存活 worker）" if survivors else ""),
+        )
+
+    reg_note = _register_self(conn, ctx, args.role)
+
+    body = section(
+        "✓ 账本已清空，从头来",
+        [
+            f"  任务        删了 {before['tasks']} 条（其中在办 {before['open_tasks']} 条）",
+            f"  交付记录    删了 {before['deliverables']} 条",
+            f"  文件声明    释放 {before['active_claims']} 把活跃锁",
+            f"  角色注册    清了 {before['registry']} 条",
+            f"  审计        删了 {before['events']} 条",
+            f"  配置        保留（scratch_dir 等不受影响）",
+            f"  本会话      {reg_note}",
+        ],
+    )
+    steps = [
+        "worker 窗口需要重新登记： /am-worker register worker-1（2 / 3 同理）",
+        "规则文件和 hook 没动，不用重装",
+    ]
+    if survivors:
+        steps.insert(
+            0,
+            f"⚠ 你用了 --force，而 {'、'.join(survivors)} 还活着 —— "
+            "立刻去那些窗口 /clear 或直接关掉，它们手上的锁已经没了",
+        )
+    return Result(
+        text=join(body, next_steps(steps)),
+        data={"reset": True, "before": before, "live_workers": survivors},
+    )
+
+
+def _count(conn, table: str, where: str = "1=1") -> int:
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}").fetchone()[0])
+
+
+def _live_workers(conn, ctx) -> list[str]:
+    """还活着的 worker 角色名。探针不可用时保守返回注册表里所有 alive 的。"""
+    registered = [r for r in registry.workers(conn) if r.status.value == "alive"]
+    if not registered:
+        return []
+    sessions = liveness.list_sessions()
+    if sessions is None:
+        # 探不到不等于都死了 —— 宁可拦住让用户自己确认，也不能默认它们已经没了
+        return [r.role for r in registered]
+    alive_ids = {s.session_id for s in sessions}
+    return [r.role for r in registered if r.session_id in alive_ids]
 
 
 def _plugin_root() -> Path:

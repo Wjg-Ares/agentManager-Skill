@@ -83,7 +83,7 @@ python scripts/pool.py --json check-edit src/Foo.cs
 
 | 命令 | 用途 |
 |---|---|
-| `setup` | 建库、装规则、注册主 agent |
+| `setup` | 建库、装规则、注册主 agent（`--reset` 清空账本重来） |
 | `register <角色>` | 登记本会话（worker-1 / main …） |
 | `whoami` | 我是谁、在干什么、占着哪些文件 |
 | `status` | 全景 + 下一步（`--check-live` 顺带探活） |
@@ -136,7 +136,7 @@ python scripts/pool.py config set deliver_timeout_min 45
 python -m unittest discover -s tests
 ```
 
-68 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
+73 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
 手工验证要开两个窗口卡时机，写成测试就是几行。
 
 两条硬约束由测试强制，不靠注释：
