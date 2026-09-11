@@ -134,16 +134,26 @@ def _reset(ctx, args) -> Result:
         "events": _count(conn, "events"),
     }
 
-    survivors = _live_workers(conn, ctx)
-    if survivors and not args.force:
-        raise UsageError(
-            f"还有 {len(survivors)} 个 worker 活着：{'、'.join(survivors)}",
-            hint=(
-                "它们是独立进程，现在清空会把文件锁一起删掉，而它们还在同一个目录里改代码 —— "
-                "覆盖丢代码正是这套东西要防的事。先关掉那些窗口再 --reset；"
-                "确实要强来就加 --force"
-            ),
-        )
+    survivors, probed = _live_workers(conn)
+    if not args.force:
+        if not probed:
+            raise UsageError(
+                "探针不可用，无法确认那些 worker 窗口是不是真的关了",
+                hint=(
+                    "探不到不等于都死了。注册表里的 alive/dead 只是缓存，不能拿来当依据 —— "
+                    "据此清掉锁，而对方其实还在改代码，就会覆盖丢代码。"
+                    "确认窗口都关了的话加 --force"
+                ),
+            )
+        if survivors:
+            raise UsageError(
+                f"探到还有 {len(survivors)} 个 worker 活着：{'、'.join(survivors)}",
+                hint=(
+                    "它们是独立进程，现在清空会把文件锁一起删掉，而它们还在同一个目录里改代码 —— "
+                    "覆盖丢代码正是这套东西要防的事。先关掉那些窗口再 --reset；"
+                    "确实要强来就加 --force"
+                ),
+            )
 
     now = utcnow()
     with db.transaction(conn):
@@ -174,11 +184,17 @@ def _reset(ctx, args) -> Result:
         "worker 窗口需要重新登记： /am-worker register worker-1（2 / 3 同理）",
         "规则文件和 hook 没动，不用重装",
     ]
-    if survivors:
+    if survivors and probed:
         steps.insert(
             0,
-            f"⚠ 你用了 --force，而 {'、'.join(survivors)} 还活着 —— "
+            f"⚠ 你用了 --force，而探到 {'、'.join(survivors)} 还活着 —— "
             "立刻去那些窗口 /clear 或直接关掉，它们手上的锁已经没了",
+        )
+    elif survivors:
+        steps.insert(
+            0,
+            f"⚠ 探针当时不可用，{'、'.join(survivors)} 是死是活没确认过 —— "
+            "去看一眼那些窗口还在不在，在的话立刻关掉，它们手上的锁已经没了",
         )
     return Result(
         text=join(body, next_steps(steps)),
@@ -190,17 +206,24 @@ def _count(conn, table: str, where: str = "1=1") -> int:
     return int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}").fetchone()[0])
 
 
-def _live_workers(conn, ctx) -> list[str]:
-    """还活着的 worker 角色名。探针不可用时保守返回注册表里所有 alive 的。"""
-    registered = [r for r in registry.workers(conn) if r.status.value == "alive"]
+def _live_workers(conn) -> tuple[list[str], bool]:
+    """当场探一次，返回 (真正还活着的 worker 角色名, 探针是否可用)。
+
+    **不看 registry.status** —— 那个字段是 reap 维护的缓存，两个方向都会过时：
+    标着 alive 的可能早就关窗口了（那就该允许删），标着 dead 的也可能又开起来了
+    （那就绝不能删）。后一种更危险：它活着在改代码，而我以为它死了，把锁清掉。
+
+    要拿别人的锁开刀，判断依据只能是当场探到的实况，不能是表里的记录。
+    """
+    registered = registry.workers(conn)  # 全部，不按 status 预先过滤
     if not registered:
-        return []
+        return [], True
     sessions = liveness.list_sessions()
     if sessions is None:
-        # 探不到不等于都死了 —— 宁可拦住让用户自己确认，也不能默认它们已经没了
-        return [r.role for r in registered]
+        # 探不到 ≠ 都死了。这里返回全部并标记探针失效，由调用方拒绝执行
+        return [r.role for r in registered], False
     alive_ids = {s.session_id for s in sessions}
-    return [r.role for r in registered if r.session_id in alive_ids]
+    return [r.role for r in registered if r.session_id in alive_ids], True
 
 
 def _plugin_root() -> Path:

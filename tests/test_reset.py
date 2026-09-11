@@ -56,6 +56,36 @@ class ResetTest(unittest.TestCase):
         ):
             return setup_cmd.run(ctx, args)
 
+    def test_dead_in_table_but_actually_alive_still_blocks(self) -> None:
+        """表里标着 dead、实际还开着 —— 这是最危险的一种，必须拦住。
+
+        registry.status 只是 reap 维护的缓存。据它判断就会清掉一个还在改代码的
+        worker 手上的锁。判断依据只能是当场探到的实况。
+        """
+        from poolkit import db as db_mod
+        from poolkit.models import WorkerStatus
+
+        with db_mod.transaction(self.conn):
+            registry_mod = sys.modules["poolkit.registry"]
+            registry_mod.set_status(
+                self.conn, "worker-1", WorkerStatus.DEAD, now="2026-01-01T00:00:00Z"
+            )
+        with self.assertRaises(UsageError) as caught:
+            self._reset(live=["sid-worker-1"])
+        self.assertIn("worker-1", str(caught.exception))
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM tasks").fetchone()["c"], 1
+        )
+
+    def test_alive_in_table_but_actually_gone_is_deletable(self) -> None:
+        """表里标着 alive、实际窗口早关了 —— 该允许删，不能被过期状态挡住。"""
+        result = self._reset(live=[])  # 探针里没有任何会话
+        self.assertTrue(result.data["reset"])
+        self.assertEqual(result.data["live_workers"], [])
+        # 清空后只剩当前会话重新登记的 main，worker 那条没了
+        roles = [r["role"] for r in self.conn.execute("SELECT role FROM registry")]
+        self.assertEqual(roles, ["main"])
+
     def test_refuses_while_a_worker_is_alive(self) -> None:
         with self.assertRaises(UsageError) as caught:
             self._reset(live=["sid-worker-1"])

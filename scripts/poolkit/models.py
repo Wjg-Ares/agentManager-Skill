@@ -46,6 +46,17 @@ class TaskStatus(StrEnum):
 
 
 class WorkerStatus(StrEnum):
+    """注册表里的存活标记。
+
+    **这是 reap 维护的缓存，不是实况。** 两个方向都会过时：标着 alive 的可能早就
+    关了窗口，标着 dead 的也可能又开起来了。
+
+    拿它做**调度和展示**没问题 —— 查表够快，判错了还有超时重派和 reap 兜底。
+    但**破坏性操作必须当场探一次**（`liveness.list_sessions()`），典型如
+    `setup --reset`：据过期状态清掉一个还在改代码的 worker 手上的锁，
+    就会发生这套东西唯一要防的事故。
+    """
+
     ALIVE = "alive"
     DEAD = "dead"
 
