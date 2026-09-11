@@ -68,6 +68,27 @@ class VendorTest(unittest.TestCase):
             (self.claude / "scripts" / "hooks" / "pretooluse.py").is_file()
         )
 
+    def test_templates_landed(self) -> None:
+        """规则模板也得落地。
+
+        漏了它 = 落地不完整：--vendor 会把插件卸掉，之后每次 setup 都找不到模板。
+        """
+        self.assertTrue(
+            (self.claude / "templates" / "rules" / "am-orchestration.md").is_file()
+        )
+
+    def test_rules_written_even_though_plugin_gets_retired(self) -> None:
+        """落地这一趟里插件会被卸掉，但规则文件必须照样装好。
+
+        这正是事故现场：清理跑在读模板之前，把自己的源删了。
+        """
+        rules = self.claude / "rules" / "am-orchestration.md"
+        self.assertTrue(rules.is_file(), "规则没写成 —— 八成又被提前卸插件坑了")
+        self.assertIn(
+            (self.claude / "scripts" / "pool.py").as_posix(),
+            rules.read_text(encoding="utf-8"),
+        )
+
     def test_no_pycache_copied(self) -> None:
         """复制时要排除源目录里的 __pycache__，别把编译产物搬进用户项目。"""
         self.assertEqual(self.pycache_after_vendor, [])

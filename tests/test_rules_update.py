@@ -111,6 +111,24 @@ class RulesUpdateTest(unittest.TestCase):
         self._set_template(V1)  # 再升一版（这里退回 v1，内容不同即可）
         self.assertEqual(self._install(), "已更新到新版规则")
 
+    def test_template_comes_from_base_not_plugin_root(self) -> None:
+        """模板必须从 base 读。
+
+        回归：--vendor 的顺序原本是「卸插件 → 装规则」，而装规则那步去
+        _plugin_root() 找模板 —— 插件刚被自己卸掉，于是报「插件文件不完整」，
+        项目里什么都没写成。
+        """
+        self._set_template(V1)
+        already_gone = self.tmp / "plugin-was-uninstalled"  # 根本不存在
+
+        with patch.object(setup_cmd, "_plugin_root", lambda: already_gone):
+            _, note = setup_cmd._install_rules(
+                self.conn, self.project, force=False, base=self.plugin
+            )
+
+        self.assertEqual(note, "已写入")
+        self.assertEqual(self.target.read_text(encoding="utf-8"), V1)
+
     def test_force_backs_up_hand_edits(self) -> None:
         """强制覆盖之前，要把用户改过的那份留个 .bak —— 别直接抹掉他写的东西。"""
         self._set_template(V1)

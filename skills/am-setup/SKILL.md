@@ -30,6 +30,21 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py" setup
 **不需要** reset —— 直接跑 `/am-setup` 就会把地址更新过来，账本留着。
 它会先检查有没有 worker 还活着，有就拒绝并说明原因，别自作主张加 `--force`。
 
+## 如果报「找不到文件」
+
+看一眼报错里的路径：如果里面原样出现了美元号加大括号的插件根变量，
+或者塌成了 `/scripts/pool.py`（git bash 下会显示成 `D:\...\Git\scripts\pool.py`），
+就说明**这个会话没展开那个变量**。先定位真实路径：
+
+```bash
+python -c "import glob,os;p=sorted(glob.glob(os.path.expanduser('~/.claude/plugins/cache/*/*/*/scripts/pool.py')));print(p[-1] if p else 'NOT FOUND')"
+```
+
+拿它输出的绝对路径替换掉命令里那段，重跑一次。
+
+**跑完 `--vendor` 之后就不会再有这个问题** —— 落地会把四个命令里的路径全部改写成
+项目内的绝对路径，不含任何变量。
+
 **照它的输出做，不要自己发挥。** 输出里已经写好了下一步（开几个 worker 窗口、
 每个窗口里敲什么）。
 

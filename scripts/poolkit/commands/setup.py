@@ -109,7 +109,6 @@ def run(ctx, args) -> Result:
         vendor_note = _vendor_files(root)
         base = root / ".claude"
         hook_note = _install_hook(root)
-        retire_note = _retire_plugin(root, keep=args.keep_plugin)
 
     # 落地会把规则里的脚本路径改写成项目内的新路径，旧副本里那条必然失效 ——
     # 这时候「保留用户的旧文件」是帮倒忙，worker 照着它跑只会找不到脚本。
@@ -121,6 +120,11 @@ def run(ctx, args) -> Result:
         base=base,
         force_reason="--force-rules" if args.force_rules else "落地重写了脚本路径",
     )
+
+    # 卸插件放到最后。它会删掉插件目录，而上面每一步都还在读那里的文件 ——
+    # 顺序错了就是自己把自己的模板删掉，实际发生过。
+    if args.vendor:
+        retire_note = _retire_plugin(root, keep=args.keep_plugin)
     gitignore_note = (
         "跳过" if args.no_gitignore else _ensure_gitignore(root)
     )
@@ -320,7 +324,10 @@ def _install_rules(
 
     所以写入时记一个哈希，下次拿它当基准比对。
     """
-    source = _plugin_root() / "templates" / "rules" / config.RULES_FILENAME
+    # 模板从 base 读，不从 _plugin_root()。
+    # 落地模式下 base 是项目内的 .claude/，而插件目录随时可能已经被卸掉 ——
+    # 真出过事故：--vendor 先卸插件、再来这里找模板，直接报「插件文件不完整」。
+    source = base / "templates" / "rules" / config.RULES_FILENAME
     target = root / ".claude" / "rules" / config.RULES_FILENAME
     if not source.exists():
         raise UsageError(
@@ -414,6 +421,12 @@ def _vendor_files(root: Path) -> str:
         src / "hooks" / _HOOK_MARK, dst_scripts / "hooks" / _HOOK_MARK
     )
 
+    # 规则模板也要带过来。漏了它就等于落地不完整：插件一卸，
+    # 以后每次 setup 都找不到模板 —— 而 --vendor 恰恰会把插件卸掉。
+    dst_templates = claude / "templates"
+    shutil.rmtree(dst_templates, ignore_errors=True)
+    shutil.copytree(src / "templates", dst_templates)
+
     # 四个 skill：命令路径写死成项目内的绝对路径。
     # 项目级 skill 放在 .claude/skills/，Claude Code 会自动加载。
     pool_py = (dst_scripts / "pool.py").as_posix()
@@ -440,6 +453,7 @@ def _vendor_files(root: Path) -> str:
 _VENDORED_IGNORES = (
     ".claude/scripts/",
     ".claude/skills/",
+    ".claude/templates/",
     ".claude/settings.local.json",
 )
 

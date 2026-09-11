@@ -179,7 +179,7 @@ python scripts/pool.py config set deliver_timeout_min 45
 python -m unittest discover -s tests
 ```
 
-130 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
+133 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
 手工验证要开两个窗口卡时机，写成测试就是几行。
 
 两条硬约束由测试强制，不靠注释：
