@@ -111,6 +111,32 @@ class RulesUpdateTest(unittest.TestCase):
         self._set_template(V1)  # 再升一版（这里退回 v1，内容不同即可）
         self.assertEqual(self._install(), "已更新到新版规则")
 
+    def test_force_backs_up_hand_edits(self) -> None:
+        """强制覆盖之前，要把用户改过的那份留个 .bak —— 别直接抹掉他写的东西。"""
+        self._set_template(V1)
+        self._install()
+        self.target.write_text(MINE, encoding="utf-8")
+        self._set_template(V2)
+
+        note = self._install(force=True)
+        backup = self.target.with_name(self.target.name + ".bak")
+
+        self.assertTrue(backup.is_file(), "手改过的内容被直接盖掉了")
+        self.assertEqual(backup.read_text(encoding="utf-8"), MINE)
+        self.assertIn("已备份", note)
+        self.assertEqual(self.target.read_text(encoding="utf-8"), V2)
+
+    def test_no_backup_when_nothing_was_hand_edited(self) -> None:
+        """没手改过就别留一堆 .bak 垃圾在人家项目里。"""
+        self._set_template(V1)
+        self._install()
+        self._set_template(V2)
+        self._install()  # 自动更新，不是覆盖用户的东西
+
+        self.assertFalse(
+            self.target.with_name(self.target.name + ".bak").exists()
+        )
+
     def test_legacy_copy_without_baseline_is_not_overwritten(self) -> None:
         """老版本装的没有哈希记录，判断不出是不是用户改的 —— 保守不覆盖。"""
         self._set_template(V1)

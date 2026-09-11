@@ -98,8 +98,15 @@ def run(ctx, args) -> Result:
         hook_note = _install_hook(root)
         retire_note = _retire_plugin(root, keep=args.keep_plugin)
 
+    # 落地会把规则里的脚本路径改写成项目内的新路径，旧副本里那条必然失效 ——
+    # 这时候「保留用户的旧文件」是帮倒忙，worker 照着它跑只会找不到脚本。
+    # 所以 --vendor 一律覆盖（手改过的内容会在 _install_rules 里自动备份）。
     rules_path, rules_note = _install_rules(
-        conn, root, force=args.force_rules, base=base
+        conn,
+        root,
+        force=args.force_rules or args.vendor,
+        base=base,
+        force_reason="--force-rules" if args.force_rules else "落地重写了脚本路径",
     )
     gitignore_note = (
         "跳过" if args.no_gitignore else _ensure_gitignore(root)
@@ -279,7 +286,12 @@ def _digest(text: str) -> str:
 
 
 def _install_rules(
-    conn, root: Path, *, force: bool, base: Path
+    conn,
+    root: Path,
+    *,
+    force: bool,
+    base: Path,
+    force_reason: str = "--force-rules",
 ) -> tuple[Path, str]:
     """把规则模板装进项目的 .claude/rules/。
 
@@ -321,6 +333,14 @@ def _install_rules(
             db.set_setting(conn, _RULES_HASH_KEY, source_hash, utcnow())
 
     def _write(note: str) -> tuple[Path, str]:
+        # 覆盖之前先看一眼要盖掉的是不是用户自己写的东西。
+        # 判据还是哈希基准：和上次写入时不一样，就说明是他改的，留个 .bak。
+        if target.exists():
+            current = _digest(target.read_text(encoding="utf-8"))
+            if current != db.get_setting(conn, _RULES_HASH_KEY):
+                backup = target.with_name(target.name + ".bak")
+                shutil.copy2(target, backup)
+                note += f"；你改过的那份已备份为 {backup.name}"
         target.write_text(source_text, encoding="utf-8")
         _remember()
         return target, note
@@ -335,7 +355,8 @@ def _install_rules(
         return target, "已是最新"
 
     if force:
-        return _write("已覆盖（--force-rules）")
+        # 说清楚是谁触发的覆盖 —— 用户没敲 --force-rules 却看到它，只会困惑
+        return _write(f"已覆盖（{force_reason}）")
 
     recorded = db.get_setting(conn, _RULES_HASH_KEY)
     if recorded == current_hash:

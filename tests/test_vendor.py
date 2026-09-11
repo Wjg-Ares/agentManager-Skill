@@ -209,5 +209,31 @@ class VendorTest(unittest.TestCase):
         self.assertIn("worker-1", result["systemMessage"])
 
 
+class VendorRewritesStaleRulesTest(unittest.TestCase):
+    """用户的真实路径：先用插件模式跑过一阵，再落地。
+
+    那时项目里的规则指向的是插件目录（C 盘）。落地必须把它改写成项目内路径 ——
+    留着旧的等于让 worker 照着一条失效路径去找脚本，所以 --vendor 一律覆盖，
+    不需要用户额外加 --force-rules。
+    """
+
+    def test_stale_plugin_path_is_rewritten(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="am-stale-")).resolve()
+        rules = root / ".claude" / "rules" / "am-orchestration.md"
+
+        # 1) 插件模式：规则里写的是插件目录
+        proc = run_cli(str(POOL), "--project-root", str(root), "setup")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(REPO.as_posix(), rules.read_text(encoding="utf-8"))
+
+        # 2) 落地：必须改写成项目内路径，不用加 --force-rules
+        proc = run_cli(str(POOL), "--project-root", str(root), "setup", "--vendor")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        text = rules.read_text(encoding="utf-8")
+        self.assertIn((root / ".claude" / "scripts" / "pool.py").as_posix(), text)
+        self.assertNotIn(f"{REPO.as_posix()}/scripts/pool.py", text)
+
+
 if __name__ == "__main__":
     unittest.main()
