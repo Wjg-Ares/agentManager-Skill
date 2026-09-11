@@ -145,15 +145,25 @@ def _next_steps(slots, queue, pending, dead, overdue) -> list[str]:
         )
 
     free = [s.role for s in slots if s.is_free]
+    registered = [s for s in slots if s.registration is not None]
+    unregistered = [s.role for s in slots if s.registration is None]
+
     if queue and free:
         steps.append(
             f"队首 #{queue[0].id} 可以派了： python pool.py dispatch {queue[0].id} --to {free[0]}"
         )
-    elif queue and not free:
+    elif not registered:
+        # 一个 worker 都没上线。必须说清楚这不是「都忙着」—— 说错了主 agent
+        # 会以为无人可派而自己动手，那就绕过了锁和审批，整套编排失效。
+        steps.append(
+            f"**还没有任何 worker 上线**。让用户新开窗口执行 "
+            f"/am-worker register {unregistered[0] if unregistered else 'worker-1'}"
+            f"，别自己接活干"
+        )
+    elif queue:
         steps.append("slot 全占着，队列等 slot 释放；用户对某个交付说满意后会自动腾出来")
 
-    unregistered = [s.role for s in slots if s.registration is None]
-    if unregistered and queue:
+    if unregistered and registered and queue:
         steps.append(
             f"想加并发：新开窗口后执行 /am-worker register {unregistered[0]}"
         )
@@ -168,5 +178,7 @@ def _next_steps(slots, queue, pending, dead, overdue) -> list[str]:
         )
 
     if not steps:
-        steps.append("没有待办。直接跟用户对话，有新需求用 python pool.py add \"标题\" 建任务")
+        steps.append(
+            "没有待办。有新需求就 python pool.py add \"标题\" 建任务再派下去，别自己动手做"
+        )
     return steps
