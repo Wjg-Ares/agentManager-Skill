@@ -118,6 +118,17 @@ python scripts/pool.py config set deliver_timeout_min 45
 | `deliver_timeout_min` | 30 | 派活后多久未交付算卡死 |
 | `max_attempts` | 2 | 重派几次后进死信 |
 | `default_priority` | 100 | 新任务默认优先级（越小越先） |
+| `scratch_dir` | 空 | 临时文件的去处。设了它，**任何角色**往系统 Temp 写文件都会被 hook 拦下并提示改道；留空则不启用 |
+
+`scratch_dir` 也可以在初始化时一并设好：
+
+```bash
+/am-setup --scratch-dir D:\claude-tmp
+```
+
+这条拦的是**规则**不是决策：系统 Temp 会被清理工具随时清掉，而且 Windows 的
+8.3 短名路径（`C:\Users\ADMINI~1\...`）会触发 Claude Code 的可疑路径检查，
+每写一次就要人工点一次同意。程序一毫秒判掉的事，不该惊动人。
 
 ## 开发
 
@@ -125,7 +136,7 @@ python scripts/pool.py config set deliver_timeout_min 45
 python -m unittest discover -s tests
 ```
 
-57 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
+63 个用例，含**真·多进程并发抢同一个文件**的仲裁测试 —— 那是这套东西的要害，
 手工验证要开两个窗口卡时机，写成测试就是几行。
 
 两条硬约束由测试强制，不靠注释：

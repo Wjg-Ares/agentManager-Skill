@@ -9,6 +9,18 @@
 
 下文的 `P` = `python "${CLAUDE_PLUGIN_ROOT}/scripts/pool.py"`。
 
+## 所有角色通用
+
+**临时文件、一次性脚本、中间产物不要写进系统临时目录**（`%TEMP%`、
+`C:\Users\...\AppData\Local\Temp\`、`C:\Windows\Temp\`）。写去项目配置的暂存目录，
+路径用 `P config` 查 `scratch_dir` 那一项。
+
+理由有两条，都很实际：系统 Temp 会被清理工具随时清掉；而且 Windows 给出的
+那种 8.3 短名路径（`ADMINI~1`）会触发 Claude Code 的可疑路径检查，**每写一次
+就要人工点一次同意**，很烦。
+
+设了 `scratch_dir` 的话 hook 会直接拦，不用你记 —— 但主动写对能省一次来回。
+
 ## 如果你是 worker
 
 1. **改任何文件之前先声明**：`P declare <文件...>`。

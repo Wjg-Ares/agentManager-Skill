@@ -35,6 +35,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-gitignore", action="store_true", help="不改 .gitignore"
     )
+    parser.add_argument(
+        "--scratch-dir",
+        help="临时文件的去处，如 D:\\claude-tmp。设了之后往系统 Temp 写文件会被拦下",
+    )
 
 
 def run(ctx, args) -> Result:
@@ -51,6 +55,8 @@ def run(ctx, args) -> Result:
         for key, value in config.DEFAULT_SETTINGS.items():
             if key not in existing:
                 db.set_setting(conn, key, value, now)
+        if args.scratch_dir:
+            db.set_setting(conn, "scratch_dir", args.scratch_dir.strip(), now)
 
     rules_path, rules_note = _install_rules(root, force=args.force_rules)
     gitignore_note = (
@@ -76,6 +82,7 @@ def run(ctx, args) -> Result:
             f"  .gitignore  {gitignore_note}",
             f"  本会话      {reg_note}",
             "  hook        随插件自带，已生效（未改动你的 settings.json）",
+            f"  临时文件    {db.get_setting(conn, 'scratch_dir') or '未限制（--scratch-dir 可设）'}",
         ],
     )
     steps = next_steps(

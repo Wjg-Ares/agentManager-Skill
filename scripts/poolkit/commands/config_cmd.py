@@ -22,6 +22,7 @@ _LABELS = {
     "deliver_timeout_min": "派活后多久未交付算卡死（分钟）",
     "max_attempts": "重派几次后进死信",
     "default_priority": "新任务的默认优先级（越小越先）",
+    "scratch_dir": "临时文件去处（设了就拦住往系统 Temp 写；留空关闭）",
 }
 
 
@@ -42,7 +43,7 @@ def run(ctx, args) -> Result:
                 f"未知配置项：{args.key}",
                 hint="可用：" + "、".join(cfg.DEFAULT_SETTINGS),
             )
-        if not args.value.lstrip("-").isdigit():
+        if args.key in cfg.INT_SETTINGS and not args.value.lstrip("-").isdigit():
             raise UsageError(f"{args.key} 要求整数，收到 {args.value!r}")
         now = utcnow()
         with db.transaction(conn):
@@ -65,7 +66,7 @@ def run(ctx, args) -> Result:
         )
 
     lines = [
-        f"  {key:<22} {value:<6} {_LABELS.get(key, '')}"
+        f"  {key:<20} {(value or '（未设置）'):<22} {_LABELS.get(key, '')}"
         for key, value in sorted(settings.items())
     ]
     return Result(

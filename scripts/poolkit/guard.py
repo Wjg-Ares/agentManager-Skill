@@ -113,6 +113,10 @@ def check_edit(
     if _is_am_internal(key):
         return ALLOW
 
+    scratch = _scratch_check(conn, key, file_path)
+    if scratch is not None:
+        return scratch
+
     holder = claims_mod.active_for(conn, key)
     if holder is not None:
         if holder.worker == me.role:
@@ -196,6 +200,38 @@ def _auto_claim(
     return Decision(
         allowed=True,
         note=f"已自动为 {me.role} 声明 {Path(display).name}（任务 #{task_id}）",
+    )
+
+
+def _scratch_check(
+    conn: sqlite3.Connection, key: str, display: str
+) -> Decision | None:
+    """临时文件不许往系统 Temp 写，返回 None 表示这条规则不适用。
+
+    这是一条**规则**，不是一次决策 —— 所以由程序直接判掉，既不惊动用户
+    （每次都弹一个权限框），也不惊动主 agent（它判断的依据比用户还少）。
+
+    只在配置了 ``scratch_dir`` 时启用；对所有角色一视同仁，包括主 agent。
+    """
+    if not config.is_system_temp(key):
+        return None
+    scratch = db.get_setting(conn, "scratch_dir").strip()
+    if not scratch:
+        return None
+    # 目标本身就在指定的暂存区里（有人把 scratch_dir 设进了 Temp）就别拦了
+    if config.normalize_path(scratch) in key:
+        return None
+    return Decision(
+        allowed=False,
+        reason=(
+            f"{Path(display).name} 要写进系统临时目录，本项目约定临时文件一律放：\n"
+            f"    {scratch}\n\n"
+            f"改用那个路径重试即可。系统 Temp 会被清理工具随时清掉，"
+            f"路径里的 8.3 短名（ADMINI~1 这种）还会触发 Claude Code 的可疑路径检查，"
+            f"每次都要人工点同意。\n"
+            f"（这条约定可改： python pool.py config set scratch_dir <路径>，"
+            f"留空即关闭本规则）"
+        ),
     )
 
 

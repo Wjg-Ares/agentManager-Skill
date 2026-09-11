@@ -138,6 +138,94 @@ class CheckEditTest(unittest.TestCase):
         self.assertIn("没有在办任务", decision.note)
 
 
+class ScratchDirTest(unittest.TestCase):
+    """临时文件不许进系统 Temp —— 这是规则，程序判掉，不惊动任何人。"""
+
+    TEMP_PATHS = (
+        r"C:\Users\ADMINI~1\AppData\Local\Temp\claude\scan_entities.py",
+        r"C:\Users\Administrator\AppData\Local\Temp\x.py",
+        r"C:\Windows\Temp\y.txt",
+    )
+
+    def setUp(self) -> None:
+        self.conn, _ = fresh_db()
+        register_worker(self.conn, "worker-1")
+        register_worker(self.conn, "main")
+        task = ledger.create(self.conn, title="活儿").id
+        ledger.dispatch(self.conn, task_id=task, worker="worker-1")
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def _set_scratch(self, value: str) -> None:
+        from poolkit import db as db_mod
+
+        with db_mod.transaction(self.conn):
+            db_mod.set_setting(self.conn, "scratch_dir", value, "2026-01-01T00:00:00Z")
+
+    def test_disabled_by_default(self) -> None:
+        """没配 scratch_dir 就不管 —— 别人装了这插件不该莫名被拦。"""
+        for path in self.TEMP_PATHS:
+            with self.subTest(path=path):
+                decision = guard.check_edit(
+                    self.conn, session_id="sid-worker-1", file_path=path
+                )
+                self.assertTrue(decision.allowed)
+
+    def test_blocks_system_temp_when_configured(self) -> None:
+        self._set_scratch(r"D:\claude-tmp")
+        for path in self.TEMP_PATHS:
+            with self.subTest(path=path):
+                decision = guard.check_edit(
+                    self.conn, session_id="sid-worker-1", file_path=path
+                )
+                self.assertFalse(decision.allowed)
+                self.assertIn(r"D:\claude-tmp", decision.reason)
+
+    def test_short_and_long_name_both_caught(self) -> None:
+        """8.3 短名（ADMINI~1）和长名是同一个目录，必须都拦住。"""
+        self._set_scratch(r"D:\claude-tmp")
+        short = guard.check_edit(
+            self.conn,
+            session_id="sid-worker-1",
+            file_path=r"C:\Users\ADMINI~1\AppData\Local\Temp\a.py",
+        )
+        full = guard.check_edit(
+            self.conn,
+            session_id="sid-worker-1",
+            file_path=r"C:\Users\Administrator\AppData\Local\Temp\b.py",
+        )
+        self.assertFalse(short.allowed)
+        self.assertFalse(full.allowed)
+
+    def test_main_agent_is_also_blocked(self) -> None:
+        """这条是机器习惯，跟角色无关 —— 主 agent 一样拦。"""
+        self._set_scratch(r"D:\claude-tmp")
+        decision = guard.check_edit(
+            self.conn,
+            session_id="sid-main",
+            file_path=r"C:\Users\Administrator\AppData\Local\Temp\z.py",
+        )
+        self.assertFalse(decision.allowed)
+
+    def test_normal_paths_unaffected(self) -> None:
+        self._set_scratch(r"D:\claude-tmp")
+        decision = guard.check_edit(
+            self.conn, session_id="sid-worker-1", file_path=r"D:\proj\Src.cs"
+        )
+        self.assertTrue(decision.allowed)
+
+    def test_scratch_dir_inside_temp_is_allowed(self) -> None:
+        """有人把暂存区就设在 Temp 里，那是他的选择，别拦。"""
+        self._set_scratch(r"C:\Users\Administrator\AppData\Local\Temp\mine")
+        decision = guard.check_edit(
+            self.conn,
+            session_id="sid-worker-1",
+            file_path=r"C:\Users\Administrator\AppData\Local\Temp\mine\a.py",
+        )
+        self.assertTrue(decision.allowed)
+
+
 class CheckBashTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn, _ = fresh_db()

@@ -46,7 +46,36 @@ DEFAULT_SETTINGS: Final[dict[str, str]] = {
     "deliver_timeout_min": "30",  # 派活后多久未交付算卡死
     "max_attempts": "2",  # 重派几次后进死信
     "default_priority": "100",  # 越小越先出队
+    # 临时文件的去处。设了它，往系统临时目录写文件会被拦下并改道到这里；
+    # 留空则不管（默认不启用 —— 这是个人机器习惯，不该强加给所有人）。
+    "scratch_dir": "",
 }
+
+#: 只接受整数的配置项，其余按字符串处理
+INT_SETTINGS: Final[frozenset[str]] = frozenset(
+    {"max_workers", "deliver_timeout_min", "max_attempts", "default_priority"}
+)
+
+# --------------------------------------------------------------------------
+# 系统临时目录识别
+# --------------------------------------------------------------------------
+
+#: 规范化路径里出现这些片段就算系统临时目录。
+#:
+#: 用路径片段而不是 tempfile.gettempdir() 的完整值，是因为 Windows 会给出
+#: 8.3 短名（`C:\Users\ADMINI~1\AppData\Local\Temp`），而实际写入用的多半是
+#: 长名，两者字符串不等 —— 匹配中间这段才两种写法都能覆盖。
+TEMP_PATH_MARKERS: Final[tuple[str, ...]] = (
+    os.path.normcase(os.path.join("appdata", "local", "temp")),
+    os.path.normcase(os.path.join("appdata", "roaming", "temp")),
+    os.path.normcase(os.path.join("windows", "temp")),
+    os.path.normcase(os.path.join("windows", "tmp")),
+)
+
+
+def is_system_temp(normalized_path: str) -> bool:
+    """判断一个**已规范化**的路径是否落在系统临时目录里。"""
+    return any(marker in normalized_path for marker in TEMP_PATH_MARKERS)
 
 # --------------------------------------------------------------------------
 # SQLite 连接
