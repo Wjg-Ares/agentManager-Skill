@@ -118,6 +118,55 @@ DENIED_BASH: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     ),
 )
 
+# --------------------------------------------------------------------------
+# worker 的 Bash 白名单
+# --------------------------------------------------------------------------
+#
+# worker 面对两道闸门：本工具的 hook（认得账本，知道谁持有哪个文件），
+# 和 Claude Code 的人工确认（什么都不知道，只会问 yes/no）。第二道对 worker
+# 贡献接近于零 —— 危险的事第一道已经拦了，剩下的问到人那儿也只能按 yes，
+# 唯一的产出是把人变成瓶颈：N 个 worker 窗口就是 N 个会静默卡住的地方。
+#
+# 所以命中下面这些的，hook 直接放行，不再惊动人。**这是白名单不是黑名单**：
+# 没列到的一律不表态，退回原来的权限弹窗。宁可少放，不可乱放。
+#
+# 刻意**不放**构建和测试 —— 那本来就是主 agent 的活，DENIED_BASH 拦着，
+# 不该借这个口子放开。
+
+#: 出现任一就不走白名单。放行一条命令不能等于放行它后面挂的任何东西。
+BASH_CHAINING: Final[tuple[str, ...]] = (
+    "&&", "||", ";", "|", "`", "$(", ">", "<", "\n", "\r",
+)
+
+#: Claude Code 习惯在命令前加 `cd "<项目>" &&`，这一段要容忍，但仅此一段
+CD_PREFIX_RE: Final = re.compile(
+    r"""^\s*cd\s+(?:"[^"]*"|'[^']*'|[^\s&|;<>]+)\s*&&\s*"""
+)
+
+SAFE_BASH: Final[tuple[re.Pattern[str], ...]] = (
+    # 本工具自己的账本命令 —— worker 每个动作都要用它，问了也只能批
+    re.compile(
+        r"""^\s*"?[^"\s]*python[0-9.]*(?:\.exe)?"?\s+"?[^"\s]*pool\.py"?(?:\s|$)""",
+        re.I,
+    ),
+    # 只读查看。改不了任何东西，问了也没有信息量
+    re.compile(
+        r"^\s*(ls|pwd|cat|head|tail|wc|find|grep|rg|fd|tree|file|stat|diff)\b", re.I
+    ),
+    # 只读 git。写操作在 DENIED_BASH 里，轮不到这儿
+    re.compile(
+        r"^\s*git\s+(status|diff|log|show|branch|remote|ls-files|blame)\b", re.I
+    ),
+)
+
+
+def is_safe_bash(command: str) -> bool:
+    """这条命令是否在 worker 白名单内。"""
+    rest = CD_PREFIX_RE.sub("", command, count=1)
+    if any(token in rest for token in BASH_CHAINING):
+        return False
+    return any(pattern.match(rest) for pattern in SAFE_BASH)
+
 #: 走锁判定的工具名
 GUARDED_EDIT_TOOLS: Final[frozenset[str]] = frozenset(
     {"Edit", "Write", "NotebookEdit", "MultiEdit"}

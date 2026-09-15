@@ -126,11 +126,63 @@ def main(argv: Sequence[str] | None = None) -> int:
             as_json=ctx.as_json,
         )
         return 1
+    else:
+        _auto_reap(ctx, args._command)
     finally:
         ctx.close()
 
     _emit(result, as_json=ctx.as_json)
     return result.exit_code
+
+
+#: 两次自动回收之间至少隔这么久。探针要起 `claude agents --json` 子进程（约 1 秒），
+#: 挂在每条命令上谁都受不了；而 worker 死了晚几分钟被发现完全可以接受。
+_AUTO_REAP_INTERVAL_SEC = 180
+
+#: 上次自动回收的时间。下划线开头 = 不是给用户调的旋钮（config 命令不展示）
+_AUTO_REAP_KEY = "_last_auto_reap"
+
+
+def _auto_reap(ctx: Context, command: str) -> None:
+    """顺手回收死掉的 worker。
+
+    账本里写着「任务 #2 在 worker-1 手上」，而 worker-1 的窗口早就关了 ——
+    账本不知道，这条任务从此卡死：没人做，也没人能拿走，因为它显示有主。
+    `reap` 命令本来就能解决，问题是得有人想起来敲它。
+
+    所以改成每条命令跑完顺手看一眼。**失败绝不能影响本次命令** ——
+    用户敲的是 status，不该因为回收出错而拿不到结果。
+    """
+    if command == "reap":
+        return  # 人家就是来干这个的，别重复跑
+    try:
+        conn = ctx.connect()
+    except AmError:
+        return  # 还没 setup，没什么可回收的
+
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    try:
+        last = db.get_setting(conn, _AUTO_REAP_KEY).strip()
+        if last:
+            previous = datetime.fromisoformat(last)
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=timezone.utc)
+            if now - previous < timedelta(seconds=_AUTO_REAP_INTERVAL_SEC):
+                return
+    except (ValueError, sqlite3.Error):
+        pass  # 记录坏了就当没记过，跑一次即可修正
+
+    from . import liveness
+
+    try:
+        # 先记时间再干活：探针万一超时或抛异常，也不至于每条命令都重试一遍
+        with db.transaction(conn):
+            db.set_setting(conn, _AUTO_REAP_KEY, now.isoformat(), now.isoformat())
+        liveness.reap(conn)
+    except Exception:
+        pass
 
 
 def _emit(result: Result, *, as_json: bool) -> None:

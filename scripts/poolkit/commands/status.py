@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 
 from .. import claims as claims_mod
-from .. import db, ledger, liveness
+from .. import db, guard, ledger, liveness, registry
 from ..render import (
     Result,
     join,
@@ -61,6 +61,15 @@ def run(ctx, args) -> Result:
 
     blocks = [section("Slot：", [line for s in slots for line in slot_block(s)])]
 
+    stuck = _stuck_on_prompt(conn)
+    if stuck:
+        blocks.append(
+            section(
+                f"⏸ 卡在权限确认上（{len(stuck)} 个）：",
+                [f"  {role} 等 {mins} 分钟了 · {what}" for role, mins, what in stuck],
+            )
+        )
+
     if pending:
         lines = []
         for task, deliverable in pending:
@@ -102,6 +111,15 @@ def run(ctx, args) -> Result:
         )
 
     steps = _next_steps(slots, queue, pending, dead, overdue)
+    if stuck:
+        # 排最前面：它是唯一一件**只有人能解**的事，而且卡着的那个 worker
+        # 在此期间完全不动。主 agent 再怎么调度也绕不过去。
+        address = registry.address_of(conn, stuck[0][0]) or stuck[0][0]
+        steps.insert(
+            0,
+            f"⏸ 去 `{address}` 那个窗口按一下确认 —— {stuck[0][0]} 正等着，"
+            f"它在被批准之前什么都做不了",
+        )
     head = "=== am 状态 ===" + (f"\n{reap_note}" if reap_note else "")
 
     return Result(
@@ -118,6 +136,38 @@ def run(ctx, args) -> Result:
             "free_slots": [s.role for s in slots if s.is_free],
         },
     )
+
+
+def _stuck_on_prompt(conn) -> list[tuple[str, int, str]]:
+    """哪些 worker 正卡在权限确认框上。返回 [(角色, 已等分钟, 在等什么)]。
+
+    判据是「该 worker 的**最后**一条事件是 prompt.pending」。用最后一条而不是
+    「有没有过这条」，字条就不需要显式清除 —— worker 一旦动起来（声明、交付、
+    甚至下一次 hook 判定）就会产生新事件，旧字条自然失效。
+
+    这是 hook 在弹窗前留下的，因为 worker 卡住之后自己什么都发不出来。
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    stuck: list[tuple[str, int, str]] = []
+    for reg in registry.workers(conn):
+        row = conn.execute(
+            "SELECT kind, detail, at FROM events WHERE actor=? "
+            "ORDER BY id DESC LIMIT 1",
+            (reg.role,),
+        ).fetchone()
+        if row is None or row["kind"] != guard.PENDING_KIND:
+            continue
+        try:
+            at = datetime.fromisoformat(row["at"])
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            minutes = max(0, int((now - at).total_seconds() // 60))
+        except ValueError:
+            minutes = 0
+        stuck.append((reg.role, minutes, row["detail"] or "（未记录）"))
+    return stuck
 
 
 def _pending_approval(conn):

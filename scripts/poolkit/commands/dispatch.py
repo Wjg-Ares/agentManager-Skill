@@ -59,7 +59,11 @@ def run(ctx, args) -> Result:
     body = section(f"把下面这段发给 `{reg.session_name}`：", ["  " + l if l else "" for l in brief_lines])
     steps = next_steps(
         [
-            f"用跨会话消息发给 `{reg.session_name}`",
+            f"用跨会话消息发给 `{reg.session_name}`，"
+            f"**并在同一次调用里带上 `notify_when_idle: true`**",
+            f"它一空闲（干完、被打断、或窗口关掉）你会收到一条通知；"
+            f"那时回来看 #{task.id} 交付了没 —— 没交付就是半途停了，"
+            f"用 python pool.py queue --requeue {task.id} 重排",
             "它交付后会回一条五行摘要 + 交付 ID，你只看摘要，需要细节再 python pool.py show <ID>",
         ]
     )

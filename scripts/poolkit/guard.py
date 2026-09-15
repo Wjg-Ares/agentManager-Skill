@@ -27,18 +27,40 @@ from .models import Registration, TaskStatus, utcnow
 
 @dataclass(slots=True)
 class Decision:
-    """一次 hook 判定的结果。"""
+    """一次 hook 判定的结果。**三态**，不是两态。
+
+    - ``allowed=False``            → 否决，hook 输出 deny
+    - ``allowed=True, grant=False`` → **不表态**，hook 输出 `{}`，
+      Claude Code 接着走它自己的权限规则（该弹窗还是弹窗）
+    - ``allowed=True, grant=True``  → **主动放行**，hook 输出 permissionDecision=allow，
+      跳过人工确认
+
+    第三态只发给 worker。主 agent 的窗口前坐着人，弹窗对他有意义，不动。
+    所有兜底路径一律落在第二态 —— 判不出来就退回原行为，这是安全方向。
+    """
 
     allowed: bool
     reason: str = ""
     #: 附加提示，放行时也可能有（例如「已自动为你声明该文件」）
     note: str = ""
+    #: True = 主动跳过人工确认；False = 不表态，交还给原有权限流程
+    grant: bool = False
 
     def to_dict(self) -> dict[str, object]:
-        return {"allowed": self.allowed, "reason": self.reason, "note": self.note}
+        return {
+            "allowed": self.allowed,
+            "reason": self.reason,
+            "note": self.note,
+            "grant": self.grant,
+        }
 
 
 ALLOW = Decision(allowed=True)
+
+
+def _grant(me: Registration | None, note: str = "") -> Decision:
+    """对 worker 主动放行；其他角色维持不表态。"""
+    return Decision(allowed=True, note=note, grant=bool(me and me.is_worker))
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +142,10 @@ def check_edit(
     holder = claims_mod.active_for(conn, key)
     if holder is not None:
         if holder.worker == me.role:
-            return ALLOW
+            # 声明即授权：他已经 declare 过、锁在他手上了。整个账本存在的意义
+            # 就是回答「谁有权改这个文件」，答案已经是 yes —— 再弹一次人工确认
+            # 纯属多余，而那正是 worker 窗口卡死的主要来源。
+            return _grant(me)
         return _deny_locked(conn, holder, me)
 
     if not auto_claim:
@@ -197,10 +222,52 @@ def _auto_claim(
         # 写不进去不代表要拦人，放行即可，最坏是这次修改没被锁保护
         return ALLOW
 
-    return Decision(
-        allowed=True,
-        note=f"已自动为 {me.role} 声明 {Path(display).name}（任务 #{task_id}）",
+    # 锁刚刚建好，等价于「声明即授权」那一支
+    return _grant(
+        me, note=f"已自动为 {me.role} 声明 {Path(display).name}（任务 #{task_id}）"
     )
+
+
+#: 字条的事件类型。status 靠它认出「这个 worker 正卡在弹窗上」。
+PENDING_KIND = "prompt.pending"
+
+#: 字条里带的命令片段截断长度 —— 只是给人认出是哪条，不需要全文
+_PENDING_MAX = 120
+
+
+def note_pending(
+    conn: sqlite3.Connection, *, session_id: str | None, what: str
+) -> None:
+    """记一条「worker 正等着人工确认」。
+
+    为什么非得在这里记：worker 一旦卡在权限确认框上就**彻底动不了**了 ——
+    要告诉别人就得执行命令，而它正被冻着。但 hook 是在弹窗**之前**跑的，
+    所以这段代码是整条链上最后一个还能说话的地方。
+
+    只在「不表态」时调用（真要弹窗的那一刻），所以白名单铺开之后它很少触发，
+    不会给热路径添多少写压力。
+
+    字条不需要显式清除：status 只认「这个 worker 的**最后**一条事件」，
+    它一动起来就会产生新事件，字条自然失效。
+    """
+    me = whoami(conn, session_id)
+    if me is None or not me.is_worker:
+        return
+    text = what.strip().replace("\n", " ")
+    if len(text) > _PENDING_MAX:
+        text = text[:_PENDING_MAX] + "…"
+    try:
+        with db.transaction(conn):
+            db.log_event(
+                conn,
+                kind=PENDING_KIND,
+                now=utcnow(),
+                actor=me.role,
+                session_id=me.session_id,
+                detail=text,
+            )
+    except sqlite3.Error:
+        pass  # 记不上就算了，绝不能因为记账失败卡住用户的操作
 
 
 def _project_root_of(conn: sqlite3.Connection) -> str | None:
@@ -316,4 +383,8 @@ def check_bash(
                 f"由主 agent 在审批通过后统一构建。"
             ),
         )
+
+    # 禁用清单之外，再看白名单。命中就不惊动人；没命中维持不表态。
+    if config.is_safe_bash(command):
+        return _grant(me)
     return ALLOW

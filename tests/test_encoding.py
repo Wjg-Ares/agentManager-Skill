@@ -117,13 +117,31 @@ class HookEncodingTest(unittest.TestCase):
         self.assertIn("已被 worker-1 声明", result["systemMessage"])
         self.assertIn("sess-worker-1", result["systemMessage"])
 
-    def test_allow_path_survives_gbk(self) -> None:
+    def test_grant_path_survives_gbk(self) -> None:
+        """持锁 → 主动放行，理由是中文，同样不能在 GBK 控制台下崩掉。"""
         result = self._run_hook(
             {
                 "tool_name": "Edit",
                 "session_id": "sid-worker-1",
                 "cwd": str(self.root),
                 "tool_input": {"file_path": self.locked},
+            }
+        )
+        self.assertEqual(
+            result["hookSpecificOutput"]["permissionDecision"], "allow"
+        )
+        self.assertIn(
+            "账本", result["hookSpecificOutput"]["permissionDecisionReason"]
+        )
+
+    def test_abstain_path_survives_gbk(self) -> None:
+        """白名单外维持不表态，输出是空对象。"""
+        result = self._run_hook(
+            {
+                "tool_name": "Bash",
+                "session_id": "sid-worker-1",
+                "cwd": str(self.root),
+                "tool_input": {"command": "curl https://例子.com"},
             }
         )
         self.assertEqual(result, {})

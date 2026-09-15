@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 
 # Windows 下 stdout 默认 GBK，而这里吐出的 JSON 带中文拒绝理由，直接 print 会
@@ -60,12 +59,14 @@ def _find_ledger(cwd: str) -> str | None:
 def _grant(reason: str) -> None:
     """**主动**放行，跳过权限弹窗。
 
-    和 `_allow()` 是两回事，这个区别是整个快速通道的立足点：
+    和 `_allow()` 是两回事，这个区别是三态判定的立足点：
       - `_allow()` 打印 `{}` —— 「我不表态」，Claude Code 接着走它原有的权限规则，
-        该弹窗还是弹窗。这是所有兜底路径该走的。
+        该弹窗还是弹窗。所有兜底路径都该走这条。
       - `_grant()` 打印 permissionDecision=allow —— 「我批了」，不弹窗。
-    所以「不是子 agent 就维持原先的权限行为」不需要写任何代码，
-    只要不进这个函数就是了。
+    所以「判不出来就维持原先的权限行为」不需要写任何代码，不进这个函数就是了。
+
+    谁能拿到 grant 由 guard 决定（只发给在册的 worker），不在这里判 ——
+    判据是账本里的 registry，不是 Claude Code 的某个内部字段。
     """
     print(
         json.dumps(
@@ -82,73 +83,11 @@ def _grant(reason: str) -> None:
     sys.exit(0)
 
 
-#: 命令里出现这些就不走快速通道 —— 放行是白名单，一旦能拼接就等于放行任意命令
-_CHAINING = ("&&", "||", ";", "|", "`", "$(", ">", "<", "\n", "\r")
-
-#: Claude Code 习惯在命令前面加 `cd "<项目>" &&`，这一段要允许，但仅此一段
-_CD_PREFIX_RE = re.compile(
-    r"""^\s*cd\s+(?:"[^"]*"|'[^']*'|[^\s&|;<>]+)\s*&&\s*""")
-
-#: 形如 `python <任意路径>/pool.py ...`。解释器名要匹配上，
-#: 否则 `echo pool.py` 这种也会被当成自己人。
-_POOL_CMD_RE = re.compile(
-    r"""^\s*"?[^"\s]*python[0-9.]*(?:\.exe)?"?\s+"?[^"\s]*pool\.py"?(?:\s|$)""",
-    re.IGNORECASE,
-)
-
-
-def _is_pool_command(command: str) -> bool:
-    """这条 Bash 是不是「单纯在调本工具的 pool.py」。"""
-    rest = _CD_PREFIX_RE.sub("", command, count=1)
-    if any(token in rest for token in _CHAINING):
-        return False
-    return bool(_POOL_CMD_RE.match(rest))
-
-
-#: 只读 transcript 末尾这么多字节 —— 会话文件能到几十 MB，全读进来太贵
-_TAIL_BYTES = 65536
-
-
-def _is_subagent(payload: dict) -> bool:
-    """判断触发本次工具调用的是不是子 agent（Task 工具起的那种）。
-
-    依据是 transcript 里的 `isSidechain`：子 agent 的记录会标 true。
-    **这条判据尚未在真实子 agent 上验证过** —— 这台开发机的 transcript 里
-    该字段全是 false（从没跑过子 agent），没有正样本可比对。
-    所以整条路径的失败方向被刻意设计成「返回 False」：认不出来就是不放行，
-    退回原有的权限弹窗，也就是加这段之前的行为。宁可少放行，不可乱放行。
-
-    要确认字段对不对，设环境变量 AM_HOOK_DEBUG=<日志路径> 跑一次，
-    对比子 agent 和主 agent 两边的 payload。
-    """
-    path = payload.get("transcript_path")
-    if not path or not os.path.isfile(path):
-        return False
-    try:
-        with open(path, "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            handle.seek(max(0, size - _TAIL_BYTES))
-            chunk = handle.read()
-    except OSError:
-        return False
-
-    # 从后往前找最近一条带该字段的记录：当前上下文是主是子，最新那条说了算
-    for raw in reversed(chunk.splitlines()):
-        if b'"isSidechain"' not in raw:
-            continue
-        try:
-            entry = json.loads(raw.decode("utf-8", "replace"))
-        except ValueError:
-            continue  # 尾部截断的半行，跳过
-        return bool(entry.get("isSidechain"))
-    return False
-
-
 def _debug_dump(payload: dict) -> None:
     """设了 AM_HOOK_DEBUG 就把原始 payload 追加到该文件。
 
-    留这个口子是因为子 agent 的判据还没验；在真实环境里跑一次就能定下来。
+    排查用：想知道 hook 到底收到了什么（session_id 对不对、cwd 是哪儿）时打开。
+    平时不设，不产生任何开销。
     """
     target = os.environ.get("AM_HOOK_DEBUG")
     if not target:
@@ -193,16 +132,6 @@ def main() -> None:
     if tool != "Bash" and tool not in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         _allow()
 
-    # 快速通道：子 agent 调本工具自己的 pool.py，不必弹窗问用户。
-    #
-    # 放在找账本之前 —— 这两个判断都是纯字符串匹配，比向上遍历目录便宜；
-    # 而且 pool.py 是账本工具本身，它的读写走的是自己的事务，不需要过并发锁那一关。
-    #
-    # 三个条件缺一不可，任一不满足就往下走原有流程（该弹窗弹窗、该拦截拦截）。
-    if tool == "Bash" and _is_pool_command(tool_input.get("command") or ""):
-        if _is_subagent(payload):
-            _grant("子 agent 调用本工具的 pool.py，无需人工确认")
-
     # 先判否，再谈其他：没有账本就跟本插件无关，此时连 poolkit 都不导入
     ledger_file = _find_ledger(cwd)
     if ledger_file is None:
@@ -236,23 +165,29 @@ def main() -> None:
 
     try:
         if tool == "Bash":
-            command = tool_input.get("command") or ""
-            if not command:
+            subject = tool_input.get("command") or ""
+            if not subject:
                 _allow()
             decision = guard.check_bash(
-                conn, session_id=session_id, command=command
+                conn, session_id=session_id, command=subject
             )
         else:
-            file_path = (
+            subject = (
                 tool_input.get("file_path")
                 or tool_input.get("notebook_path")
                 or ""
             )
-            if not file_path:
+            if not subject:
                 _allow()
             decision = guard.check_edit(
-                conn, session_id=session_id, file_path=file_path
+                conn, session_id=session_id, file_path=subject
             )
+
+        # 不表态 = 接下来真的会弹窗问人，而 worker 一旦卡在那个框上就彻底
+        # 动不了了（要说话就得执行命令，而它正被冻着）。这里是最后一个还能
+        # 说话的地方，留张字条，好让 /am-status 显示「谁卡在哪个窗口」。
+        if decision.allowed and not decision.grant:
+            guard.note_pending(conn, session_id=session_id, what=subject)
     except Exception:
         # 判定本身出错 → 放行。锁的作用是防丢代码，不是给用户添堵；
         # 出错时拦住一切会让整个工作区瘫掉，那比漏拦一次更糟。
@@ -265,8 +200,17 @@ def main() -> None:
 
     if decision.allowed:
         if decision.note:
-            print(json.dumps({"systemMessage": decision.note}, ensure_ascii=False))
+            payload_out: dict = {"systemMessage": decision.note}
+            if decision.grant:
+                payload_out["hookSpecificOutput"] = {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": decision.note,
+                }
+            print(json.dumps(payload_out, ensure_ascii=False))
             sys.exit(0)
+        if decision.grant:
+            _grant("已在账本中授权（持有该文件的声明，或命中 worker 安全命令白名单）")
         _allow()
     _deny(decision.reason)
 
