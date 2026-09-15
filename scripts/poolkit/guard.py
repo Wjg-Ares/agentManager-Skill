@@ -139,6 +139,9 @@ def check_edit(
     if scratch is not None:
         return scratch
 
+    if me.role == config.MAIN_ROLE:
+        return _deny_main_doing_work(conn, file_path)
+
     holder = claims_mod.active_for(conn, key)
     if holder is not None:
         if holder.worker == me.role:
@@ -162,6 +165,52 @@ def check_edit(
         )
 
     return _auto_claim(conn, me=me, task_id=task.id, key=key, display=file_path)
+
+
+def _deny_main_doing_work(conn: sqlite3.Connection, display: str) -> Decision:
+    """主 agent 不许自己改业务文件。
+
+    这是整套编排最主要的失效方式：主 agent 一旦自己动手，就没有文件锁
+    （可能和 worker 撞车覆盖）、没有交付记录、没有审批，账本上什么都查不到。
+
+    规则第 0 条一直写着这件事，但那是**纯约定**。实际发生过一次，事后它自己
+    复盘说：「我读过那句，还是照着相反的方向做了」—— 提示词层面的规则挡不住
+    「用户在等、我自己干更快」这个压力。这套东西信不过约定才有的 hook，
+    那这条同样关键的规则也该由 hook 兜着。
+
+    构建和 git 写**不受影响** —— 那些走 Bash，不经过这里，本来就是主 agent 的活。
+
+    代价是没有 worker 在线时主 agent 会彻底动不了。那正是规则第 0 条想要的结果：
+    此时正确的做法是让用户去开窗口，而不是自己顶上。
+    """
+    free = [s.role for s in _free_slots(conn)]
+    if free:
+        how = (
+            f"  python pool.py delegate \"一句话标题\" --detail \"完整需求\"\n"
+            f"  （现在空闲：{'、'.join(free)}；建任务和派活一条命令就够）"
+        )
+    else:
+        how = (
+            "  现在没有空闲 worker —— 让用户新开窗口执行 "
+            "/am-worker register worker-1，\n"
+            "  **在那之前不要自己动手**。「没人上线」的解法是让用户开窗口，不是你顶上"
+        )
+    return Decision(
+        allowed=False,
+        reason=(
+            f"{Path(display).name} 是业务文件，主 agent 不自己改。\n"
+            f"你自己动手就没有文件锁（可能和 worker 撞车覆盖）、没有交付记录、"
+            f"没有审批，账本上查不到 —— 整套编排从这一步开始失效。\n\n"
+            f"下一步：\n{how}\n\n"
+            f"（构建验证和 git 写操作不受这条限制，那些本来就是你的活。）"
+        ),
+    )
+
+
+def _free_slots(conn: sqlite3.Connection):
+    from . import ledger  # 局部 import：避免模块级环依赖
+
+    return [s for s in ledger.slots(conn) if s.is_free]
 
 
 def _deny_locked(

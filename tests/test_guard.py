@@ -281,3 +281,68 @@ class CheckBashTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MainAgentMayNotDoWorkTest(unittest.TestCase):
+    """主 agent 不许自己改业务文件。
+
+    这是整套编排最主要的失效方式 —— 它自己动手就没有文件锁、没有交付记录、
+    没有审批，账本上查不到。规则第 0 条一直写着，但那是纯约定：实际发生过一次，
+    事后主 agent 自己复盘说「我读过那句，还是照着相反的方向做了」。
+    """
+
+    def setUp(self) -> None:
+        # fresh_db 第二个返回值是**库文件路径**（<根>/.claude/am/pool.db），
+        # 不是项目根 —— 直接拿它拼业务文件会落进 .claude/am/ 里，
+        # 被当成账本自己的文件放行，判定根本走不到
+        self.conn, self.db_file = fresh_db()
+        self.root = self.db_file.parents[2]
+        register_worker(self.conn, "main")
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def _edit(self, session_id: str, path: str):
+        return guard.check_edit(self.conn, session_id=session_id, file_path=path)
+
+    def test_main_is_denied(self) -> None:
+        decision = self._edit("sid-main", str(self.root / "src" / "App.cs"))
+        self.assertFalse(decision.allowed)
+        self.assertIn("主 agent 不自己改", decision.reason)
+
+    def test_reason_points_at_delegate_when_worker_free(self) -> None:
+        register_worker(self.conn, "worker-1")
+        decision = self._edit("sid-main", str(self.root / "src" / "App.cs"))
+        self.assertIn("delegate", decision.reason)
+        self.assertIn("worker-1", decision.reason)
+
+    def test_reason_says_open_a_window_when_pool_empty(self) -> None:
+        """「没人上线」的解法是让用户开窗口，不是主 agent 顶上。"""
+        decision = self._edit("sid-main", str(self.root / "src" / "App.cs"))
+        self.assertIn("register worker-1", decision.reason)
+        self.assertIn("不要自己动手", decision.reason)
+
+    def test_ledger_files_still_writable(self) -> None:
+        """账本自己的文件不能被拦 —— 否则 pool.py 写库会被自己挡住。"""
+        ledger_file = str(self.db_file)
+        self.assertTrue(self._edit("sid-main", ledger_file).allowed)
+
+    def test_unregistered_session_unaffected(self) -> None:
+        """临时开的普通会话不受这套约束。"""
+        self.assertTrue(self._edit("sid-nobody", str(self.root / "x.cs")).allowed)
+
+    def test_worker_unaffected(self) -> None:
+        register_worker(self.conn, "worker-1")
+        t = ledger.create(self.conn, title="活").id
+        ledger.dispatch(self.conn, task_id=t, worker="worker-1")
+        self.assertTrue(self._edit("sid-worker-1", str(self.root / "x.cs")).allowed)
+
+    def test_main_bash_untouched(self) -> None:
+        """构建和 git 写走 Bash，本来就是主 agent 的活，不受影响。"""
+        for command in ("dotnet build", "git commit -m x", "git push"):
+            with self.subTest(command=command):
+                self.assertTrue(
+                    guard.check_bash(
+                        self.conn, session_id="sid-main", command=command
+                    ).allowed
+                )
