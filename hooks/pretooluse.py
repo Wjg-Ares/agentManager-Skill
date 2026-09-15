@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 # Windows 下 stdout 默认 GBK，而这里吐出的 JSON 带中文拒绝理由，直接 print 会
@@ -56,6 +57,109 @@ def _find_ledger(cwd: str) -> str | None:
         directory = parent
 
 
+def _grant(reason: str) -> None:
+    """**主动**放行，跳过权限弹窗。
+
+    和 `_allow()` 是两回事，这个区别是整个快速通道的立足点：
+      - `_allow()` 打印 `{}` —— 「我不表态」，Claude Code 接着走它原有的权限规则，
+        该弹窗还是弹窗。这是所有兜底路径该走的。
+      - `_grant()` 打印 permissionDecision=allow —— 「我批了」，不弹窗。
+    所以「不是子 agent 就维持原先的权限行为」不需要写任何代码，
+    只要不进这个函数就是了。
+    """
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": reason,
+                }
+            },
+            ensure_ascii=False,
+        )
+    )
+    sys.exit(0)
+
+
+#: 命令里出现这些就不走快速通道 —— 放行是白名单，一旦能拼接就等于放行任意命令
+_CHAINING = ("&&", "||", ";", "|", "`", "$(", ">", "<", "\n", "\r")
+
+#: Claude Code 习惯在命令前面加 `cd "<项目>" &&`，这一段要允许，但仅此一段
+_CD_PREFIX_RE = re.compile(
+    r"""^\s*cd\s+(?:"[^"]*"|'[^']*'|[^\s&|;<>]+)\s*&&\s*""")
+
+#: 形如 `python <任意路径>/pool.py ...`。解释器名要匹配上，
+#: 否则 `echo pool.py` 这种也会被当成自己人。
+_POOL_CMD_RE = re.compile(
+    r"""^\s*"?[^"\s]*python[0-9.]*(?:\.exe)?"?\s+"?[^"\s]*pool\.py"?(?:\s|$)""",
+    re.IGNORECASE,
+)
+
+
+def _is_pool_command(command: str) -> bool:
+    """这条 Bash 是不是「单纯在调本工具的 pool.py」。"""
+    rest = _CD_PREFIX_RE.sub("", command, count=1)
+    if any(token in rest for token in _CHAINING):
+        return False
+    return bool(_POOL_CMD_RE.match(rest))
+
+
+#: 只读 transcript 末尾这么多字节 —— 会话文件能到几十 MB，全读进来太贵
+_TAIL_BYTES = 65536
+
+
+def _is_subagent(payload: dict) -> bool:
+    """判断触发本次工具调用的是不是子 agent（Task 工具起的那种）。
+
+    依据是 transcript 里的 `isSidechain`：子 agent 的记录会标 true。
+    **这条判据尚未在真实子 agent 上验证过** —— 这台开发机的 transcript 里
+    该字段全是 false（从没跑过子 agent），没有正样本可比对。
+    所以整条路径的失败方向被刻意设计成「返回 False」：认不出来就是不放行，
+    退回原有的权限弹窗，也就是加这段之前的行为。宁可少放行，不可乱放行。
+
+    要确认字段对不对，设环境变量 AM_HOOK_DEBUG=<日志路径> 跑一次，
+    对比子 agent 和主 agent 两边的 payload。
+    """
+    path = payload.get("transcript_path")
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - _TAIL_BYTES))
+            chunk = handle.read()
+    except OSError:
+        return False
+
+    # 从后往前找最近一条带该字段的记录：当前上下文是主是子，最新那条说了算
+    for raw in reversed(chunk.splitlines()):
+        if b'"isSidechain"' not in raw:
+            continue
+        try:
+            entry = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            continue  # 尾部截断的半行，跳过
+        return bool(entry.get("isSidechain"))
+    return False
+
+
+def _debug_dump(payload: dict) -> None:
+    """设了 AM_HOOK_DEBUG 就把原始 payload 追加到该文件。
+
+    留这个口子是因为子 agent 的判据还没验；在真实环境里跑一次就能定下来。
+    """
+    target = os.environ.get("AM_HOOK_DEBUG")
+    if not target:
+        return
+    try:
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def _deny(reason: str) -> None:
     print(
         json.dumps(
@@ -84,8 +188,20 @@ def main() -> None:
     session_id = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID")
     cwd = payload.get("cwd") or os.getcwd()
 
+    _debug_dump(payload)
+
     if tool != "Bash" and tool not in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         _allow()
+
+    # 快速通道：子 agent 调本工具自己的 pool.py，不必弹窗问用户。
+    #
+    # 放在找账本之前 —— 这两个判断都是纯字符串匹配，比向上遍历目录便宜；
+    # 而且 pool.py 是账本工具本身，它的读写走的是自己的事务，不需要过并发锁那一关。
+    #
+    # 三个条件缺一不可，任一不满足就往下走原有流程（该弹窗弹窗、该拦截拦截）。
+    if tool == "Bash" and _is_pool_command(tool_input.get("command") or ""):
+        if _is_subagent(payload):
+            _grant("子 agent 调用本工具的 pool.py，无需人工确认")
 
     # 先判否，再谈其他：没有账本就跟本插件无关，此时连 poolkit 都不导入
     ledger_file = _find_ledger(cwd)
