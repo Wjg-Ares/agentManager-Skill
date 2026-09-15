@@ -105,8 +105,12 @@ def run(ctx, args) -> Result:
     vendor_note = ""
     retire_note = ""
     hook_note = "随插件自带，已生效（未改动你的 settings.json）"
+    vendor_src: Path | None = None
     if args.vendor:
-        vendor_note = _vendor_files(root)
+        # 源先定下来再动手 —— 定不出来就在这里报错退出，
+        # 此时还什么都没删，项目是完好的
+        vendor_src = _vendor_source(root)
+        vendor_note = _vendor_files(root, vendor_src)
         base = root / ".claude"
         hook_note = _install_hook(root)
 
@@ -124,7 +128,8 @@ def run(ctx, args) -> Result:
     # 卸插件放到最后。它会删掉插件目录，而上面每一步都还在读那里的文件 ——
     # 顺序错了就是自己把自己的模板删掉，实际发生过。
     if args.vendor:
-        retire_note = _retire_plugin(root, keep=args.keep_plugin)
+        assert vendor_src is not None
+        retire_note = _retire_plugin(root, src=vendor_src, keep=args.keep_plugin)
     gitignore_note = (
         "跳过" if args.no_gitignore else _ensure_gitignore(root)
     )
@@ -397,13 +402,85 @@ HOOK_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash"
 _HOOK_MARK = "pretooluse.py"
 
 
-def _vendor_files(root: Path) -> str:
+#: 认插件目录用的特征文件。三个一起命中才算数 —— 只看其中一个
+#: 有可能撞上别的插件，而这里选错源会把一堆无关文件复制进用户项目。
+_VENDOR_SIGNATURE = (
+    Path("scripts") / "poolkit" / "config.py",
+    Path("hooks") / _HOOK_MARK,
+    Path("templates") / "rules" / config.RULES_FILENAME,
+)
+
+
+def _same_tree(a: Path, b: Path) -> bool:
+    """a 就是 b、或者 a 在 b 里面。解析失败按「不是」算，别误伤。"""
+    try:
+        resolved_a, resolved_b = a.resolve(), b.resolve()
+    except OSError:
+        return False
+    return resolved_a == resolved_b or resolved_a.is_relative_to(resolved_b)
+
+
+def _find_plugin_copy() -> Path | None:
+    """在插件安装目录里找一份可用的源。多版本并存时取版本号最大的那个。"""
+    cache = _claude_home() / "plugins" / "cache"
+    if not cache.is_dir():
+        return None
+    # 目录结构：cache/<市场>/<插件名>/<版本>
+    matches = sorted(
+        candidate
+        for candidate in cache.glob("*/*/*")
+        if all((candidate / part).exists() for part in _VENDOR_SIGNATURE)
+    )
+    return matches[-1] if matches else None
+
+
+def _vendor_source(root: Path) -> Path:
+    """确定落地要从哪里复制。
+
+    **不能无脑用 `_plugin_root()`** —— 它在这个场景下会指向项目自己，出过事故：
+
+    项目落地过一次之后，`.claude/skills/am-setup/` 就存在了，而 Claude Code
+    **优先加载项目级 skill**。于是下一次敲 `/am-setup --vendor`，跑的 pool.py
+    就是落地副本自己；它不是插件加载的，`CLAUDE_PLUGIN_ROOT` 也就没设，
+    `_plugin_root()` 退化成按文件位置推导，得到 `<项目>/.claude` —— 源即目标。
+    接着 `_vendor_files` 第一步 `rmtree(dst_scripts)` 就把正在运行的脚本连同
+    poolkit 一起删了，再复制时源已经不存在，落地半途而废。更糟的是
+    settings.local.json 里的 hook 仍指向已被删除的 pretooluse.py，
+    于是那个项目的 Edit / Bash 全被拦死，连改回配置都做不到。
+
+    所以这里先判同源，撞上了就去插件安装里另找一份真正的源。找不到才报错 ——
+    报错也比把用户的项目搞瘫强。
+    """
+    src = _plugin_root()
+    claude = root / ".claude"
+    if not _same_tree(src, claude):
+        return src
+
+    fallback = _find_plugin_copy()
+    if fallback is not None and not _same_tree(fallback, claude):
+        return fallback
+
+    raise UsageError(
+        f"落地的源和目标是同一个目录：{claude}",
+        hint=(
+            "这次跑的 pool.py 就是项目里的落地副本，再落一次会把它自己删掉。"
+            "项目已经是落地状态了，通常不需要再落一次；"
+            "确实要升级就先装插件：claude plugin install agentManager-Skill，"
+            "装完如果 /am-setup 仍然走到项目内这份，"
+            "把 .claude/skills/am-* 删掉让插件那份接管，再跑 /am-setup --vendor"
+        ),
+    )
+
+
+def _vendor_files(root: Path, src: Path) -> str:
     """把运行时文件全部复制进项目的 `.claude/`。
 
     落完之后项目自包含 —— 脚本、hook、四个命令、规则都在项目里，
     C 盘那个插件可以卸载。代价是升级要重新跑一次 `--vendor`。
+
+    `src` 由 `_vendor_source()` 定，**不要**在这里改回 `_plugin_root()`：
+    下面第一步就是删除目标目录，源和目标同根时那一刀砍的是自己。
     """
-    src = _plugin_root()
     claude = root / ".claude"
     dst_scripts = claude / "scripts"
 
@@ -607,9 +684,13 @@ def _plugin_name(src: Path) -> str:
         return src.parent.parent.name if src.parent.name else src.name
 
 
-def _retire_plugin(root: Path, *, keep: bool) -> str:
-    """落地成功后把插件安装清掉 —— 这是用户要「C 盘不占空间」的最后一步。"""
-    src = _plugin_root()
+def _retire_plugin(root: Path, *, src: Path, keep: bool) -> str:
+    """落地成功后把插件安装清掉 —— 这是用户要「C 盘不占空间」的最后一步。
+
+    `src` 必须是**这次真正复制用的那个源**（见 `_vendor_source`），不是
+    `_plugin_root()`：源被回退过的情况下，那两个值不是一回事，
+    按后者判断会漏卸 —— 用户要的「C 盘不占空间」就没做到。
+    """
     if not _is_installed_plugin(src):
         return f"未动（脚本来自 {src}，不是插件安装目录）"
 

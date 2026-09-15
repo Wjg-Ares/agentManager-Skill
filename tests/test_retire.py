@@ -55,13 +55,12 @@ class RetireGuardTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="am-retire-")).resolve()
 
-    def _retire(self, *, keep: bool = False) -> str:
-        return setup_cmd._retire_plugin(self.root, keep=keep)
+    def _retire(self, src: Path, *, keep: bool = False) -> str:
+        return setup_cmd._retire_plugin(self.root, src=src, keep=keep)
 
     def test_leaves_source_repo_alone(self) -> None:
         """从仓库跑落地 → 报告「未动」，而且绝不能碰到仓库里的文件。"""
-        with patch.object(setup_cmd, "_plugin_root", lambda: REPO):
-            note = self._retire()
+        note = self._retire(REPO)
         self.assertIn("未动", note)
         self.assertTrue((REPO / "scripts" / "pool.py").is_file(), "仓库被动过了！")
 
@@ -70,21 +69,39 @@ class RetireGuardTest(unittest.TestCase):
         fake_install = (
             setup_cmd._claude_home() / "plugins" / "cache" / "whatever" / "x" / "1.0.0"
         )
-        with patch.object(setup_cmd, "_plugin_root", lambda: fake_install), patch.object(
+        with patch.object(
             setup_cmd, "_verify_vendored", lambda _root: (False, "假装自检失败")
         ):
-            note = self._retire()
+            note = self._retire(fake_install)
         self.assertIn("保留", note)
         self.assertIn("假装自检失败", note)
+
+    def test_retires_the_source_actually_used(self) -> None:
+        """卸的必须是**这次复制用的那个源**。
+
+        源被 `_vendor_source` 回退过时，它和 `_plugin_root()` 不是一回事；
+        按后者判断会漏卸，用户要的「C 盘不占空间」就落空了。
+        """
+        fake_install = (
+            setup_cmd._claude_home() / "plugins" / "cache" / "mkt" / "p" / "9.9.9"
+        )
+        # _plugin_root 指向项目自己（正是事故现场的状态），但传进去的是真源
+        with patch.object(
+            setup_cmd, "_plugin_root", lambda: self.root / ".claude"
+        ), patch.object(
+            setup_cmd, "_verify_vendored", lambda _root: (True, "")
+        ), patch.object(
+            setup_cmd, "_plugin_name", lambda _src: "p"
+        ):
+            note = self._retire(fake_install, keep=True)
+        self.assertIn("保留", note, "应当认出这是插件安装，而不是报「未动」")
 
     def test_keep_plugin_wins_over_successful_check(self) -> None:
         fake_install = (
             setup_cmd._claude_home() / "plugins" / "cache" / "whatever" / "x" / "1.0.0"
         )
-        with patch.object(setup_cmd, "_plugin_root", lambda: fake_install), patch.object(
-            setup_cmd, "_verify_vendored", lambda _root: (True, "")
-        ):
-            note = self._retire(keep=True)
+        with patch.object(setup_cmd, "_verify_vendored", lambda _root: (True, "")):
+            note = self._retire(fake_install, keep=True)
         self.assertIn("--keep-plugin", note)
 
 

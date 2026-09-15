@@ -21,6 +21,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 POOL = REPO / "scripts" / "pool.py"
 
+sys.path.insert(0, str(REPO / "scripts"))
+
 
 def run_cli(*args: str, cwd: Path | None = None, plugin_root: Path | None = REPO) -> subprocess.CompletedProcess:
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
@@ -254,6 +256,77 @@ class VendorRewritesStaleRulesTest(unittest.TestCase):
         text = rules.read_text(encoding="utf-8")
         self.assertIn((root / ".claude" / "scripts" / "pool.py").as_posix(), text)
         self.assertNotIn(f"{REPO.as_posix()}/scripts/pool.py", text)
+
+
+class SelfVendorGuardTest(unittest.TestCase):
+    """源即目标 —— 落地过的项目再落一次，绝不能把自己删掉。
+
+    真事故：项目落地过之后 `.claude/skills/am-setup/` 就存在了，而 Claude Code
+    **优先加载项目级 skill**，于是下一次 `/am-setup --vendor` 跑的就是落地副本
+    自己。它不是插件加载的，CLAUDE_PLUGIN_ROOT 没设，`_plugin_root()` 退化成按
+    文件位置推导 → `<项目>/.claude`。第一步 rmtree 把正在运行的脚本删了，复制时
+    源已不存在，落地半途而废；而 hook 仍指向被删掉的 pretooluse.py，
+    那个项目的 Edit / Bash 全被拦死，连改回配置都做不到。
+    """
+
+    def _vendored_project(self) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="am-self-")).resolve()
+        proc = run_cli(str(POOL), "--project-root", str(root), "setup", "--vendor")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return root
+
+    def test_self_vendor_does_not_delete_itself(self) -> None:
+        """用落地副本自己跑 --vendor：要么成功，要么报错，但脚本必须还在。"""
+        root = self._vendored_project()
+        vendored_pool = root / ".claude" / "scripts" / "pool.py"
+
+        # plugin_root=None 清掉 CLAUDE_PLUGIN_ROOT，复现「跑的是项目内那份」
+        proc = run_cli(
+            str(vendored_pool),
+            "--project-root",
+            str(root),
+            "setup",
+            "--vendor",
+            plugin_root=None,
+        )
+
+        self.assertTrue(vendored_pool.is_file(), "把自己删了！")
+        self.assertTrue(
+            (root / ".claude" / "scripts" / "poolkit" / "config.py").is_file(),
+            "poolkit 被删了！",
+        )
+        self.assertTrue(
+            (root / ".claude" / "scripts" / "hooks" / "pretooluse.py").is_file(),
+            "hook 脚本被删了 —— 项目的 Edit/Bash 会全被拦死",
+        )
+        if proc.returncode != 0:
+            # 找不到可用的源时报错是允许的，但必须说清楚是同源问题
+            self.assertIn("同一个目录", proc.stdout + proc.stderr)
+
+    def test_still_runnable_after_self_vendor_attempt(self) -> None:
+        """最要紧的是别把项目搞瘫 —— 试过之后脚本得还能跑。"""
+        root = self._vendored_project()
+        vendored_pool = root / ".claude" / "scripts" / "pool.py"
+        run_cli(
+            str(vendored_pool), "--project-root", str(root), "setup", "--vendor",
+            plugin_root=None,
+        )
+        proc = run_cli(
+            str(vendored_pool), "--project-root", str(root), "config", plugin_root=None
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+
+class SameTreeTest(unittest.TestCase):
+    def test_detects_self_and_nesting(self) -> None:
+        from poolkit.commands import setup as setup_cmd
+
+        root = Path(tempfile.mkdtemp(prefix="am-tree-")).resolve()
+        claude = root / ".claude"
+        claude.mkdir()
+        self.assertTrue(setup_cmd._same_tree(claude, claude))
+        self.assertTrue(setup_cmd._same_tree(claude / "scripts", claude))
+        self.assertFalse(setup_cmd._same_tree(REPO, claude))
 
 
 if __name__ == "__main__":
