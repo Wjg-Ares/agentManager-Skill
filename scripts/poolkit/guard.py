@@ -216,14 +216,26 @@ def _free_slots(conn: sqlite3.Connection):
 def _deny_locked(
     conn: sqlite3.Connection, holder: claims_mod.Claim, me: Registration
 ) -> Decision:
+    # 局部 import：`jev` 带着 urllib 进来，而本模块在热路径上 ——
+    # 只有真撞锁（冷分支）才付这个导入成本。调用的也只是一次环境变量查询，不联网。
+    from . import jev
+
     address = registry.address_of(conn, holder.worker) or holder.worker
     scope = f"（声明范围：{holder.scope}）" if holder.scope else ""
+    shortcut = (
+        f"想先让程序判一次真假冲突（等几秒，比发消息来回快）：\n"
+        f"  python pool.py arbitrate {holder.display_path} --scope \"你要改的方法\"\n"
+        f"  判不出来会原样退回下面这套人工协商，不会卡住你。\n\n"
+        if jev.available()
+        else ""
+    )
     return Decision(
         allowed=False,
         reason=(
             f"{Path(holder.display_path).name} 已被 {holder.worker} 声明"
             f"（任务 #{holder.task_id}）{scope}。\n"
             f"共用工作区里直接改会覆盖对方的改动、且 git 无从介入，所以这里必须拦。\n\n"
+            f"{shortcut}"
             f"下一步：直接给 `{address}` 发消息，说明你要改哪个方法、为什么。\n"
             f"  · 真冲突 → 等对方交付、审批通过后锁自动释放\n"
             f"  · 假冲突（改的是不同 region）→ 让对方交接锁：\n"

@@ -16,6 +16,7 @@ allowed-tools:
 | **动代码之前** | `P declare <文件路径...>`（可反复追加） |
 | 声明时想说清改哪块 | `P declare <文件> --scope "CollectTask.Save 方法"` |
 | 交付 | `P deliver <任务ID> --changed "..." --impact "..." --risk "无" --confirm "无" --content-file <产出文件>` |
+| 撞锁了，先判真假 | `P arbitrate <文件> --scope "你要改的方法"` |
 | 撞锁、协商后判定是假冲突 | 由**持有者**执行 `P handoff <文件> --to worker-N` |
 
 `$ARGUMENTS` 是子命令时（如 `/am-worker register worker-2`）直接把它拼到 `P` 后面执行。
@@ -29,6 +30,9 @@ allowed-tools:
 
 `declare` 失败或 hook 拦下你时，输出里会给出**持有者的会话名** —— 那就是地址，
 直接发跨会话消息过去：说明你要改哪个方法、为什么。
+
+发消息之前可以先 `P arbitrate <文件> --scope "你要改的方法"` ——
+判得出来就直接照它说的做，判不出来它会原样退回下面这套，不会卡你。
 
 - 真冲突 → 等对方交付并通过审批，锁自动释放
 - 假冲突（改的是同一文件的不同 region）→ 请对方 `handoff` 给你
